@@ -5,7 +5,7 @@ import logging
 import requests
 import argparse
 import psutil
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from flask import Flask, request, jsonify, abort
 
 """
@@ -31,6 +31,13 @@ python app.py --config /etc/stats-proxy/prod-config.json
     "node2": "https://server02.example.com",
     "localhost": "http://127.0.0.1:8080"
   }
+  "allowed_paths": {
+    "public_ip": "/public_ip",
+    "cpu": "/cpu",
+    "ram": "/ram",
+    "disk": "/disk",
+    "net": "/net"
+  }
 }
 
 # Test local:
@@ -42,7 +49,7 @@ curl -X GET http://localhost:8080/cpu/node1 \
   -H "X-API-Key: tajnyklic123"
 """
 
-class SIBuddy:
+class SysPiper:
     """Main application class for SIBuddy."""
 
     def __init__(self, config_path):
@@ -52,6 +59,7 @@ class SIBuddy:
         self.log_level = self.config.get("log_level", "INFO").upper()
         self.myip_url = self.config.get("myip_url", "https://myip.dk")
         self.allowed_nodes = self.config.get("allowed_nodes", {})
+        self.allowed_paths = self.config.get("allowed_paths", {})
 
         # Setup logging
         logging.basicConfig(level=self.log_level)
@@ -196,6 +204,30 @@ class SIBuddy:
                 "bytes_recv": net.bytes_recv
             }
 
+        @self.app.route("/remote/<node>/<alias>", methods=["GET"])
+        def remote_proxy(node, alias):
+            """Proxy only explicitly allowed aliases to remote nodes."""
+            self.check_auth()
+
+            if node not in self.allowed_nodes.keys():
+                abort(404, description="Node not allowed")
+
+            if alias not in self.allowed_paths.keys():
+                abort(404, description="Alias not allowed for this node")
+
+            try:
+                headers = {"X-API-Key": self.api_key}
+                full_url = urljoin(self.allowed_nodes[node], self.allowed_paths[alias])
+                self.logger.debug(f"Proxying remote request to {full_url}")
+
+                proxy_response = requests.get(full_url, headers=headers, timeout=5)
+                proxy_response.raise_for_status()
+            except Exception as e:
+                self.logger.error(f"Failed to proxy remote request to {node}: {e}")
+                abort(502, description=f"Failed to fetch from target node: {str(e)}")
+
+            return jsonify(proxy_response.json())
+
     def run(self, host="0.0.0.0", port=8080):
         """Start the Flask application."""
         self.app.run(host=host, port=port)
@@ -215,7 +247,7 @@ def main():
     """Main entry point of the application."""
     config_path = os.environ.get("CONFIG_PATH", "config.json")
     args = parse_args()
-    app = SIBuddy(config_path=(config_path or args.config))
+    app = SysPiper(config_path=(config_path or args.config))
     app.run()
 
 if __name__ == "__main__":
