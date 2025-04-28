@@ -120,7 +120,7 @@ class SysPiper:
             else:
                 # Local call
                 result = func(*args, **kwargs)
-                return jsonify(result)
+                return result
 
         wrapper.__name__ = func.__name__
         return wrapper
@@ -131,21 +131,21 @@ class SysPiper:
         @self.app.route("/public_ip", defaults={"node": None}, methods=["GET"])
         @self.app.route("/public_ip/<node>", methods=["GET"])
         @self.proxyable
-        def fetch_ip():
+        def fetch_ip(node):
             """Fetch public IP by requesting an external service."""
             self.check_auth()
             try:
                 headers = {"User-Agent": "curl/8.5.0", "Accept": "*/*"}
                 response = requests.get(self.myip_url, timeout=5, headers=headers)
-                response.raise_for_status()
+
             except Exception as e:
                 self.logger.error(f"Failed to fetch IP: {e}")
                 abort(502, description=f"Failed to reach external service: {str(e)}")
 
             self.logger.info(f"Fetched IP service response, length={len(response.text)}")
             return jsonify({
-                "status": "success",
-                "response": response.text
+                "status": "ok",
+                "ip": response.text
             })
 
         # CPU
