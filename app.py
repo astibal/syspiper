@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import os
 import logging
@@ -6,11 +7,38 @@ import requests
 import argparse
 import psutil
 import ipaddress
+import posixpath
 
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, urlunparse
 from flask import Flask, request, jsonify, abort, make_response
 
 from filters import *
+
+
+
+def normalize_url(url):
+    """Normalize a full URL, cleaning path slashes and dots."""
+    parts = urlparse(url)
+
+    # Normalize the path: remove duplicate slashes, resolve '.' and '..'
+    normalized_path = posixpath.normpath(parts.path)
+
+    # Special case: if original path ended with '/', preserve it
+    if parts.path.endswith('/') and not normalized_path.endswith('/'):
+        normalized_path += '/'
+
+    normalized_parts = (
+        parts.scheme,
+        parts.netloc,
+        normalized_path,
+        parts.params,
+        parts.query,
+        parts.fragment
+    )
+
+    return urlunparse(normalized_parts)
+
+
 
 class SysPiper:
     """Main application class for SysPiper."""
@@ -240,18 +268,40 @@ class SysPiper:
             """Proxy only explicitly allowed aliases to remote nodes."""
             self.check_auth()
 
-            if node not in self.allowed_nodes.keys():
+            if node not in self.allowed_nodes:
                 abort(404, description="Node not allowed")
 
-            if alias not in self.allowed_paths.keys():
+            if alias not in self.allowed_paths:
                 abort(404, description="Alias not allowed for this node")
 
             try:
                 headers = {"X-API-Key": self.api_key}
-                full_url = urljoin(self.allowed_nodes[node], self.allowed_paths[alias])
+                uri_path = self.allowed_paths[alias]
+                full_url = urljoin(self.allowed_nodes[node], uri_path)
+
+                try:
+                    if "~~" in full_url:
+                        match = re.search(r'~~(\w+)~~', uri_path)
+
+                        if not match:
+                            abort(502, description="template error: part not found")
+
+                        part = match.group(1)
+
+                        if part and f"@{part}" in self.config:
+                            node_value = self.config[f"@{part}"][node]
+                            uri_path = full_url.replace(f"~~{part}~~", node_value)
+
+                            full_url = normalize_url(urljoin(self.allowed_nodes[node], uri_path))
+
+
+                except (KeyError, IndexError, ValueError, re.error) as e:
+                    self.log.error(f"Failed to parse and substitute parts in URL: {e}")
+                    abort(502, description="substitution error: data missing or formatting error")
+
                 self.logger.debug(f"Proxying remote request to {full_url}")
 
-                proxy_response = requests.get(full_url, headers=headers, timeout=5)
+                proxy_response = requests.get(full_url, headers=headers, timeout=3)
                 proxy_response.raise_for_status()
             except Exception as e:
                 self.logger.error(f"Failed to proxy remote request to {node}: {e}")
