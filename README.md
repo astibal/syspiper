@@ -1,0 +1,49 @@
+SysPiper - system info JSON gateway with proxy support and loop protection
+
+This lightweight GET-only Flask app serves system info as JSON.
+It operates in read-only mode, does not modify the system,
+and accepts no parameters except fixed endpoints and parseable
+elements from URL.
+
+All parameters are white-listed, so unless there is vulnerability in 
+flask argument parsing, you should be safe.
+
+
+Supports proxying to allowed nodes, with automatic loop protection
+when requests come from localhost addresses.
+
+# Run:
+python app.py --config /etc/stats-proxy/prod-config.json
+
+# Config example:
+If allowed access is empty, system cannot be accessed. Add 
+
+
+> Note: API key is required, it may contain only alphanumeric characters and -_@.
+```json
+{
+  "api_key": "<some_secret_phrase>",
+  "log_level": "INFO",
+  "myip_url": "https://myip.dk",
+  "allowed_ips": ["0.0.0.0/0"],
+  "allowed_nodes": {
+    "node1": "http://192.168.0.101:8080",
+    "node2": "https://server02.example.com",
+    "nodex": "http://127.0.0.1:8080"
+  },
+  "allowed_paths": {
+    "public_ip": "/public_ip",
+    "cpu": "/cpu",
+    "ram": "/ram",
+    "disk": "/disk",
+    "net": "/net"
+  }
+}
+```
+
+# Test local:
+
+`curl -X GET http://localhost:8080/cpu -H "X-API-Key: secret123"`
+
+# Test proxy:
+`curl -X GET http://localhost:8080/cpu/nodex  -H "X-API-Key: secret123"`
