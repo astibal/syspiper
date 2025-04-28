@@ -128,7 +128,9 @@ class SysPiper:
     def setup_routes(self):
         """Define all API routes."""
 
-        @self.app.route("/public_ip", methods=["GET"])
+        @self.app.route("/public_ip", defaults={"node": None}, methods=["GET"])
+        @self.app.route("/public_ip/<node>", methods=["GET"])
+        @self.proxyable
         def fetch_ip():
             """Fetch public IP by requesting an external service."""
             self.check_auth()
