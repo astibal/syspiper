@@ -5,49 +5,12 @@ import logging
 import requests
 import argparse
 import psutil
+import ipaddress
+
 from urllib.parse import urlparse, urljoin
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify, abort, make_response
 
-"""
-SIBuddy - system info JSON gateway with proxy support and loop protection
-
-This lightweight GET-only Flask app serves system info as JSON.
-It operates in read-only mode, does not modify the system,
-and accepts no parameters except fixed endpoints.
-
-Supports proxying to allowed nodes, with automatic loop protection
-when requests come from localhost addresses.
-
-# Run:
-python app.py --config /etc/stats-proxy/prod-config.json
-
-# Config example:
-{
-  "api_key": "<some_secret_phrase>",
-  "log_level": "INFO",
-  "myip_url": "https://myip.dk",
-  "allowed_nodes": {
-    "node1": "http://192.168.0.101:8080",
-    "node2": "https://server02.example.com",
-    "localhost": "http://127.0.0.1:8080"
-  }
-  "allowed_paths": {
-    "public_ip": "/public_ip",
-    "cpu": "/cpu",
-    "ram": "/ram",
-    "disk": "/disk",
-    "net": "/net"
-  }
-}
-
-# Test local:
-curl -X GET http://localhost:8080/cpu \
-  -H "X-API-Key: tajnyklic123"
-
-# Test proxy:
-curl -X GET http://localhost:8080/cpu/node1 \
-  -H "X-API-Key: tajnyklic123"
-"""
+from filters import *
 
 class SysPiper:
     """Main application class for SIBuddy."""
@@ -58,6 +21,7 @@ class SysPiper:
         self.api_key = self.config.get("api_key", "default_key")
         self.log_level = self.config.get("log_level", "INFO").upper()
         self.myip_url = self.config.get("myip_url", "https://myip.dk")
+        self.allowed_ips = self.config.get("allowed_ips", ["0.0.0.0/0", ])
         self.allowed_nodes = self.config.get("allowed_nodes", {})
         self.allowed_paths = self.config.get("allowed_paths", {})
 
@@ -80,9 +44,34 @@ class SysPiper:
             sys.exit(1)
         return config
 
+    def is_remote_addr_allowed(self, cidr: str):
+        """Check if client IP is inside allowed IPs or networks."""
+        client_ip = ipaddress.ip_address(cidr)
+
+        for entry in self.allowed_ips:
+            if '/' in entry:
+                # Entry is a network
+                network = ipaddress.ip_network(entry, strict=False)
+                if client_ip in network:
+                    return True
+            else:
+                # Entry is a single IP
+                if client_ip == ipaddress.ip_address(entry):
+                    return True
+
+        return False
+
     def check_auth(self):
         """Verify the API key in the request headers."""
-        if request.headers.get("X-API-Key") != self.api_key:
+        if not self.is_remote_addr_allowed(request.remote_addr):
+            abort(401, description="Unauthorized")
+
+        api_key = request.headers.get("X-API-Key")
+        api_key = brutal_filter(api_key, lowercase=True)[:256]
+        self.logger.debug(
+            f"Received API key: {api_key}, expected: {self.api_key}"
+        )
+        if api_key != self.api_key:
             abort(401, description="Unauthorized")
 
     def proxyable(self, func):
