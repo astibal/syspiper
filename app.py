@@ -68,6 +68,7 @@ class SysPiper:
         # Setup Flask app
         self.app = Flask(__name__)
         self.setup_routes()
+        self.register_error_handlers()
 
     def load_config(self, path):
         """Load configuration parameters from a JSON file."""
@@ -124,6 +125,39 @@ class SysPiper:
 
         wrapper.__name__ = func.__name__
         return wrapper
+
+    def register_error_handlers(self):
+        """Register global JSON error handlers."""
+
+        @self.app.errorhandler(400)
+        @self.app.errorhandler(401)
+        @self.app.errorhandler(403)
+        @self.app.errorhandler(404)
+        @self.app.errorhandler(405)
+        @self.app.errorhandler(500)
+        def handle_error(error):
+            """Return appropriate error response."""
+            accept = request.headers.get('Accept', '*/*')
+
+            response_data = {
+                "status": "error",
+                "code": error.code,
+                "name": error.name,
+                "description": error.description
+            }
+
+            # Determine if client expects JSON or HTML
+            if accept == "*/*" or not accept.strip():
+                # Typical script (curl, bot) - JSON
+                return jsonify(response_data), error.code
+            elif "application/json" in accept:
+                # Explicit JSON accept - JSON
+                return jsonify(response_data), error.code
+            else:
+                # Probably a browser - return simple HTML
+                html_response = \
+                    f"<html><head><title>{error.code} {error.name}</title></head><body><h1>{error.code} {error.name}</h1><p>{error.description}</p></body></html>"
+                return make_response(html_response, error.code)
 
     def setup_routes(self):
         """Define all API routes."""
