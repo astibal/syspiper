@@ -13,7 +13,7 @@ from flask import Flask, request, jsonify, abort, make_response
 from filters import *
 
 class SysPiper:
-    """Main application class for SIBuddy."""
+    """Main application class for SysPiper."""
 
     def __init__(self, config_path):
         """Initialize the app with configuration."""
@@ -265,7 +265,7 @@ class SysPiper:
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="SIBuddy App")
+    parser = argparse.ArgumentParser(description="SysPiper App")
     parser.add_argument(
         "--config",
         type=str,
