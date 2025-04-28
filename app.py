@@ -191,7 +191,10 @@ class SysPiper:
             self.check_auth()
             cpu_percent = psutil.cpu_percent(interval=0.5)
             self.logger.debug(f"Measured CPU usage: {cpu_percent}%")
-            return {"cpu_percent": cpu_percent}
+            return {
+                "status": "ok",
+                "cpu_percent": cpu_percent
+            }
 
         # RAM
         @self.app.route("/ram", defaults={"node": None}, methods=["GET"])
@@ -203,6 +206,7 @@ class SysPiper:
             mem = psutil.virtual_memory()
             self.logger.debug(f"Measured RAM usage: {mem.percent}%")
             return {
+                "status": "ok",
                 "total": mem.total,
                 "available": mem.available,
                 "percent": mem.percent,
@@ -220,6 +224,7 @@ class SysPiper:
             disk = psutil.disk_usage('/')
             self.logger.debug(f"Measured disk usage: {disk.percent}%")
             return {
+                "status": "ok",
                 "total": disk.total,
                 "used": disk.used,
                 "free": disk.free,
@@ -236,6 +241,7 @@ class SysPiper:
             net = psutil.net_io_counters()
             self.logger.debug(f"Measured network IO: sent={net.bytes_sent}, recv={net.bytes_recv}")
             return {
+                "status": "ok",
                 "bytes_sent": net.bytes_sent,
                 "bytes_recv": net.bytes_recv
             }
