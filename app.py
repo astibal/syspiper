@@ -5,39 +5,45 @@ import logging
 import requests
 import argparse
 import psutil
+from urllib.parse import urlparse
 from flask import Flask, request, jsonify, abort
 
 """
-SIBuddy - system info json gateway
+SIBuddy - system info JSON gateway with proxy support and loop protection
 
-This is lightweight GET-only Flask app that serves system info as JSON.
-It operates in read-only mode, it changes nothing on the system,
-and doesn't accept any parameters, with the intent to be safe
-running as root user.
+This lightweight GET-only Flask app serves system info as JSON.
+It operates in read-only mode, does not modify the system,
+and accepts no parameters except fixed endpoints.
+
+Supports proxying to allowed nodes, with automatic loop protection
+when requests come from localhost addresses.
 
 # Run:
+python app.py --config /etc/stats-proxy/prod-config.json
 
-
-`python app.py --config /etc/stats-proxy/prod-config.json`
-
-
-# Config:
-```json
+# Config example:
 {
   "api_key": "<some_secret_phrase>",
   "log_level": "INFO",
-  "myip.url": "https://myip.dk"
+  "myip_url": "https://myip.dk",
+  "allowed_nodes": {
+    "node1": "http://192.168.0.101:8080",
+    "node2": "https://server02.example.com",
+    "localhost": "http://127.0.0.1:8080"
+  }
 }
-```
 
-# Test:
-`curl -X GET http://localhost:8080/public_ip \
-  -H "X-API-Key: secret_key_example"`
-  
+# Test local:
+curl -X GET http://localhost:8080/cpu \
+  -H "X-API-Key: tajnyklic123"
+
+# Test proxy:
+curl -X GET http://localhost:8080/cpu/node1 \
+  -H "X-API-Key: tajnyklic123"
 """
 
 class SIBuddy:
-    """Main application class for Stats Proxy."""
+    """Main application class for SIBuddy."""
 
     def __init__(self, config_path):
         """Initialize the app with configuration."""
@@ -45,6 +51,7 @@ class SIBuddy:
         self.api_key = self.config.get("api_key", "default_key")
         self.log_level = self.config.get("log_level", "INFO").upper()
         self.myip_url = self.config.get("myip_url", "https://myip.dk")
+        self.allowed_nodes = self.config.get("allowed_nodes", {})
 
         # Setup logging
         logging.basicConfig(level=self.log_level)
@@ -69,14 +76,49 @@ class SIBuddy:
         if request.headers.get("X-API-Key") != self.api_key:
             abort(401, description="Unauthorized")
 
+    def proxyable(self, func):
+        """Decorator to proxy the request if 'node' parameter is present."""
+
+        def wrapper(*args, **kwargs):
+            node = kwargs.get('node')
+            if node:
+                # Protect against proxy loops from localhost requests
+                if request.remote_addr in ("127.0.0.1", "::1") or "localhost" in request.host:
+                    self.logger.warning(f"Detected localhost request, bypassing proxy for safety")
+                    result = func(*args, **kwargs)
+                    return jsonify(result)
+
+                target_url = self.allowed_nodes.get(node)
+                if not target_url:
+                    abort(404, description="Node not allowed")
+
+                try:
+                    headers = {"X-API-Key": self.api_key}
+                    endpoint = request.path.replace(f"/{node}", "")  # remove /<node> part
+                    full_url = f"{target_url}{endpoint}"
+                    self.logger.debug(f"Proxying to {full_url}")
+                    proxy_response = requests.get(full_url, headers=headers, timeout=5)
+                    proxy_response.raise_for_status()
+                except Exception as e:
+                    self.logger.error(f"Proxy to node {node} failed: {e}")
+                    abort(502, description=f"Failed to fetch from target node: {str(e)}")
+
+                return jsonify(proxy_response.json())
+            else:
+                # Local call
+                result = func(*args, **kwargs)
+                return jsonify(result)
+
+        wrapper.__name__ = func.__name__
+        return wrapper
+
     def setup_routes(self):
         """Define all API routes."""
-        
+
         @self.app.route("/public_ip", methods=["GET"])
         def fetch_ip():
             """Fetch public IP by requesting an external service."""
             self.check_auth()
-
             try:
                 headers = {"User-Agent": "curl/8.5.0", "Accept": "*/*"}
                 response = requests.get(self.myip_url, timeout=5, headers=headers)
@@ -91,53 +133,63 @@ class SIBuddy:
                 "response": response.text
             })
 
-        @self.app.route("/cpu", methods=["GET"])
-        def cpu():
+        # CPU
+        @self.app.route("/cpu", defaults={"node": None}, methods=["GET"])
+        @self.app.route("/cpu/<node>", methods=["GET"])
+        @self.proxyable
+        def cpu(node):
             """Measure CPU usage and return as JSON."""
             self.check_auth()
             cpu_percent = psutil.cpu_percent(interval=0.5)
             self.logger.debug(f"Measured CPU usage: {cpu_percent}%")
-            return jsonify({
-                "cpu_percent": cpu_percent
-            })
+            return {"cpu_percent": cpu_percent}
 
-        @self.app.route("/ram", methods=["GET"])
-        def ram():
+        # RAM
+        @self.app.route("/ram", defaults={"node": None}, methods=["GET"])
+        @self.app.route("/ram/<node>", methods=["GET"])
+        @self.proxyable
+        def ram(node):
             """Measure RAM usage and return as JSON."""
             self.check_auth()
             mem = psutil.virtual_memory()
             self.logger.debug(f"Measured RAM usage: {mem.percent}%")
-            return jsonify({
+            return {
                 "total": mem.total,
                 "available": mem.available,
                 "percent": mem.percent,
                 "used": mem.used,
                 "free": mem.free
-            })
+            }
 
-        @self.app.route("/disk", methods=["GET"])
-        def disk():
+        # Disk
+        @self.app.route("/disk", defaults={"node": None}, methods=["GET"])
+        @self.app.route("/disk/<node>", methods=["GET"])
+        @self.proxyable
+        def disk(node):
             """Measure disk usage and return as JSON."""
             self.check_auth()
             disk = psutil.disk_usage('/')
             self.logger.debug(f"Measured disk usage: {disk.percent}%")
-            return jsonify({
+            return {
                 "total": disk.total,
                 "used": disk.used,
                 "free": disk.free,
                 "percent": disk.percent
-            })
+            }
 
-        @self.app.route("/net", methods=["GET"])
-        def net():
+        # Network
+        @self.app.route("/net", defaults={"node": None}, methods=["GET"])
+        @self.app.route("/net/<node>", methods=["GET"])
+        @self.proxyable
+        def net(node):
             """Measure network I/O counters and return as JSON."""
             self.check_auth()
             net = psutil.net_io_counters()
             self.logger.debug(f"Measured network IO: sent={net.bytes_sent}, recv={net.bytes_recv}")
-            return jsonify({
+            return {
                 "bytes_sent": net.bytes_sent,
                 "bytes_recv": net.bytes_recv
-            })
+            }
 
     def run(self, host="0.0.0.0", port=8080):
         """Start the Flask application."""
@@ -145,7 +197,7 @@ class SIBuddy:
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Stats Proxy App")
+    parser = argparse.ArgumentParser(description="SIBuddy App")
     parser.add_argument(
         "--config",
         type=str,
@@ -163,4 +215,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
