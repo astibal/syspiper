@@ -85,8 +85,13 @@ class SIBuddy:
                 # Protect against proxy loops from localhost requests
                 if request.remote_addr in ("127.0.0.1", "::1") or "localhost" in request.host:
                     self.logger.warning(f"Detected localhost request, bypassing proxy for safety")
-                    result = func(*args, **kwargs)
-                    return jsonify(result)
+
+                    if node in self.allowed_nodes:
+                        result = func(*args, **kwargs)
+                        return jsonify(result)
+                    else:
+                        abort(403, description="Access to localhost is not allowed")
+
 
                 target_url = self.allowed_nodes.get(node)
                 if not target_url:
