@@ -53,6 +53,10 @@ class SysPiper:
         self.allowed_nodes = self.config.get("allowed_nodes", {})
         self.allowed_paths = self.config.get("allowed_paths", {})
 
+        self.listen_ip = None
+        self.listen_port = None
+
+
         # Setup logging
         logging.basicConfig(level=self.log_level)
         self.logger = logging.getLogger(__name__)
@@ -108,17 +112,6 @@ class SysPiper:
         def wrapper(*args, **kwargs):
             node = kwargs.get('node')
             if node:
-                # Protect against proxy loops from localhost requests
-                if request.remote_addr in ("127.0.0.1", "::1") or "localhost" in request.host:
-                    self.logger.warning(f"Detected localhost request, bypassing proxy for safety")
-
-                    if node in self.allowed_nodes:
-                        result = func(*args, **kwargs)
-                        return jsonify(result)
-                    else:
-                        abort(403, description="Access to localhost is not allowed")
-
-
                 target_url = self.allowed_nodes.get(node)
                 if not target_url:
                     abort(404, description="Node not allowed")
@@ -127,6 +120,17 @@ class SysPiper:
                     headers = {"X-API-Key": self.api_key}
                     endpoint = request.path.replace(f"/{node}", "")  # remove /<node> part
                     full_url = f"{target_url}{endpoint}"
+
+                    # Note: this may seem nice to add at first glance, but proxyable are intended to be proxied
+                    #       to next-hop SysPiper, templating is not really desirable.
+                    #       This may change, but I find it hard to imagine how that is useful.
+
+                    # full_url = self.substitute(node, endpoint)
+
+                    # Let's keep the sanity/misconfig check here. No escapes allowed!
+                    if not full_url or SysPiper._contains_substitution(full_url):
+                        abort(502, description="substitution error: data missing or formatting error")
+
                     self.logger.debug(f"Proxying to {full_url}")
                     proxy_response = requests.get(full_url, headers=headers, timeout=5)
                     proxy_response.raise_for_status()
@@ -152,6 +156,7 @@ class SysPiper:
         @self.app.errorhandler(404)
         @self.app.errorhandler(405)
         @self.app.errorhandler(500)
+        @self.app.errorhandler(502)
         def handle_error(error):
             """Return appropriate error response."""
             accept = request.headers.get('Accept', '*/*')
@@ -175,6 +180,39 @@ class SysPiper:
                 html_response = \
                     f"<html><head><title>{error.code} {error.name}</title></head><body><h1>{error.code} {error.name}</h1><p>{error.description}</p></body></html>"
                 return make_response(html_response, error.code)
+
+    @staticmethod
+    def _contains_substitution(url):
+        return "~~" in url
+
+    def substitute(self, node: str, alias: str) -> str | None:
+
+        uri_path = self.allowed_paths[alias]
+        full_url = urljoin(self.allowed_nodes[node], uri_path)
+
+        try:
+            if SysPiper._contains_substitution(full_url):
+                match = re.search(r'~~(\w+)~~', uri_path)
+                if not match:
+                    return None
+
+                part = match.group(1)
+                parts = self.config.get("parts", {})
+
+                if part and f"@{part}" in parts:
+                    node_value = parts.get(f"@{part}",{})[node]
+                    uri_path = full_url.replace(f"~~{part}~~", node_value)
+                    full_url = normalize_url(urljoin(self.allowed_nodes[node], uri_path))
+                else:
+                    return None
+
+            return full_url
+
+        except (KeyError, IndexError, ValueError, re.error) as e:
+            self.logger.error(f"Failed to parse and substitute parts in URL: {e}")
+
+        return None
+
 
     def setup_routes(self):
         """Define all API routes."""
@@ -276,41 +314,34 @@ class SysPiper:
 
             try:
                 headers = {"X-API-Key": self.api_key}
-                uri_path = self.allowed_paths[alias]
-                full_url = urljoin(self.allowed_nodes[node], uri_path)
+                full_url = self.substitute(node, alias)
 
-                try:
-                    if "~~" in full_url:
-                        match = re.search(r'~~(\w+)~~', uri_path)
-
-                        if not match:
-                            abort(502, description="template error: part not found")
-
-                        part = match.group(1)
-
-                        if part and f"@{part}" in self.config:
-                            node_value = self.config[f"@{part}"][node]
-                            uri_path = full_url.replace(f"~~{part}~~", node_value)
-
-                            full_url = normalize_url(urljoin(self.allowed_nodes[node], uri_path))
-
-
-                except (KeyError, IndexError, ValueError, re.error) as e:
-                    self.log.error(f"Failed to parse and substitute parts in URL: {e}")
+                if not full_url or SysPiper._contains_substitution(full_url):
                     abort(502, description="substitution error: data missing or formatting error")
 
                 self.logger.debug(f"Proxying remote request to {full_url}")
 
                 proxy_response = requests.get(full_url, headers=headers, timeout=3)
                 proxy_response.raise_for_status()
+
+            except requests.exceptions.Timeout as e:
+                self.logger.error(f"Gateway timeout to {node}: {e}")
+                return jsonify({
+                    "status": "error",
+                    "code": 504,
+                    "name": "Gateway Timeout",
+                    "description": "Request timed out"}), 504
+
             except Exception as e:
-                self.logger.error(f"Failed to proxy remote request to {node}: {e}")
+                self.logger.error(f"General gateway error to {node}: {e}")
                 abort(502, description=f"Failed to fetch from target node: {str(e)}")
 
             return jsonify(proxy_response.json())
 
     def run(self, host="0.0.0.0", port=8080):
         """Start the Flask application."""
+        self.listen_ip = host
+        self.listen_port = port
         self.app.run(host=host, port=port)
 
 def parse_args():

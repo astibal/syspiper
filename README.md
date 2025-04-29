@@ -8,7 +8,6 @@ elements from URL.
 All parameters are white-listed, so unless there is vulnerability in 
 flask argument parsing, you should be safe.
 
-
 Supports proxying to allowed nodes, with automatic loop protection
 when requests come from localhost addresses.
 
@@ -16,7 +15,8 @@ when requests come from localhost addresses.
 python app.py --config /etc/stats-proxy/prod-config.json
 
 # Config example:
-If allowed access is empty, system cannot be accessed. Add 
+If `allowed_ips` access list is present, but empty, system cannot be accessed.
+On the contrary, if the list is _not_ present, system defaults to open access.
 
 
 > Note: API key is required, it may contain only alphanumeric characters and -_@.
@@ -36,7 +36,12 @@ If allowed access is empty, system cannot be accessed. Add
     "cpu": "/cpu",
     "ram": "/ram",
     "disk": "/disk",
-    "net": "/net"
+    "net": "/net",
+    "remote_cpu": "/api/~~keys~~/cpu"
+  },
+  "@keys": {
+    "node1": "/node1-secret/",
+    "node2": "/node2-secret/"
   }
 }
 ```
@@ -46,4 +51,11 @@ If allowed access is empty, system cannot be accessed. Add
 `curl -X GET http://localhost:8080/cpu -H "X-API-Key: secret123"`
 
 # Test proxy:
+
 `curl -X GET http://localhost:8080/cpu/nodex  -H "X-API-Key: secret123"`
+
+
+
+# Test remote:
+This deserves little explanation. 
+Above example shows templating system
