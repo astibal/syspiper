@@ -110,7 +110,7 @@ class SysPiper:
             abort(401, description="Unauthorized")
 
         api_key = request.headers.get("X-API-Key")
-        api_key = brutal_filter(api_key, lowercase=True)[:256]
+        api_key = brutal_filter(api_key)[:256]
         self.logger.debug(
             f"Received API key: {api_key}, expected: {self.api_key}"
         )
