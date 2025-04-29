@@ -177,6 +177,7 @@ class SysPiper:
         @self.app.errorhandler(405)
         @self.app.errorhandler(500)
         @self.app.errorhandler(502)
+        @self.app.errorhandler(504)
         def handle_error(error):
             """Return appropriate error response."""
             accept = request.headers.get('Accept', '*/*')
@@ -377,12 +378,13 @@ def parse_args():
     )
     return parser.parse_args()
 
-def main():
+def prepare(custom_config_path: str = None) -> SysPiper:
     """Main entry point of the application."""
     config_path = os.environ.get("CONFIG_PATH", "config.json")
-    args = parse_args()
-    app = SysPiper(config_path=(config_path or args.config))
-    app.run()
+    app = SysPiper(custom_config_path or config_path)
+    return app
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    app = prepare(args.config or None)
+    app.run()

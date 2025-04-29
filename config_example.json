@@ -1,0 +1,20 @@
+{
+  "api_key": "secret123",
+  "log_level": "DEBUG",
+  "myip.url": "https://myip.dk",
+  "allowed_ips": ["0.0.0.0/0"],
+  "allowed_nodes": {
+    "node1": "http://192.168.0.101:8080",
+    "node2": "https://server02.example.com",
+    "nodex": "http://127.0.0.1:8080"
+  },
+  "allowed_paths": {
+    "cpu": "/api/~~keys~~/cpu"
+  },
+  "parts": {
+    "@keys": {
+      "node1": "/node1-secret/",
+      "node2": "/node2-secret/"
+    }
+  }
+}

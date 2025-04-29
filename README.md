@@ -11,6 +11,22 @@ flask argument parsing, you should be safe.
 Supports proxying to allowed nodes, with automatic loop protection
 when requests come from localhost addresses.
 
+Supports remote requests with templated URLs.
+
+# Install
+```shell
+# root is not needed for most cases 
+cd /home/syspiper
+
+# clone to this very directory
+git clone ssh://git@github.com/astibal/syspiper .
+
+# create virtual environment
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+```
+
 # Run:
 python app.py --config /etc/stats-proxy/prod-config.json
 
@@ -48,11 +64,11 @@ On the contrary, if the list is _not_ present, system defaults to open access.
 
 # Test local:
 
-`curl -X GET http://localhost:8080/cpu -H "X-API-Key: secret123"`
+`curl -X GET http://localhost:8181/cpu -H "X-API-Key: secret123"`
 
 # Test proxy:
 
-`curl -X GET http://localhost:8080/cpu/nodex  -H "X-API-Key: secret123"`
+`curl -X GET http://localhost:8181/cpu/nodex  -H "X-API-Key: secret123"`
 
 
 
