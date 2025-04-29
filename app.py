@@ -236,6 +236,17 @@ class SysPiper:
 
         return None
 
+    def get_node_headers(self, node: str) -> dict:
+        headers = {}
+        headers_cfg = self.config.get("headers", {})
+        node_headers = headers_cfg.get(node, [])
+        for tup in node_headers:
+            if isinstance(tup, list) and len(tup) == 2:
+                h, v = tup
+                self.logger.debug(f"Adding header '{h}: {v}' to request")
+                headers[h] = v
+
+        return headers
 
     def setup_routes(self):
         """Define all API routes."""
@@ -336,7 +347,6 @@ class SysPiper:
                 abort(404, description="Alias not allowed for this node")
 
             try:
-                headers = {"X-API-Key": self.api_key}
                 full_url = self.substitute(node, alias)
 
                 if not full_url or SysPiper._contains_substitution(full_url):
@@ -344,7 +354,7 @@ class SysPiper:
 
                 self.logger.debug(f"Proxying remote request to {full_url}")
 
-                proxy_response = requests.get(full_url, headers=headers, timeout=3)
+                proxy_response = requests.get(full_url, headers=self.get_node_headers(node), timeout=3)
                 proxy_response.raise_for_status()
 
             except requests.exceptions.Timeout as e:
