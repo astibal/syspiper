@@ -25,7 +25,11 @@ git clone ssh://git@github.com/astibal/syspiper .
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
+
+cp apparmor.d/syspiper /etc/apparmor.d/
+cp apparmor.d/tunables/syspiper /etc/apparmor.d/tunables/
 ```
+
 
 # Run:
 python app.py --config /etc/stats-proxy/prod-config.json

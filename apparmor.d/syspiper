@@ -1,0 +1,42 @@
+#include <tunables/global>
+#include <tunables/syspiper>
+
+profile syspiper @{WORKING_DIR}/.venv/bin/gunicorn {
+
+  # Allow execution only of Gunicorn itself
+  @{WORKING_DIR}/.venv/bin/gunicorn px,
+
+  # Allow Python to load its virtualenv libraries
+  @{WORKING_DIR}/.venv/** rix,
+
+  # Allow reading the configuration file
+  @{CONFIG_FILE} r,
+
+  # Allow reading SSL certificates
+  /etc/ssl/** r,
+  /etc/ca-certificates/** r,
+
+  # Allow networking (TCP/UDP)
+  network inet stream,
+  network inet6 stream,
+
+  # Allow DNS resolving
+  /etc/resolv.conf r,
+  /etc/hosts r,
+  /etc/nsswitch.conf r,
+  /lib/** r,
+  /usr/lib/** r,
+
+  # Allow random number generation
+  /dev/urandom r,
+
+  # System info for psutil
+  /proc/** r,
+  /sys/class/net/** r,
+
+  # Allow /tmp usage if needed
+  /tmp/** rw,
+
+  # Deny everything else by default
+  deny /** w,
+}
