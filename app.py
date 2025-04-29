@@ -148,7 +148,11 @@ class SysPiper:
 
                 except requests.exceptions.Timeout as e:
                     self.logger.error(f"Timeout proxying to {node}: {e}")
-                    abort(504, description="Gateway Timeout")
+                    return jsonify({
+                        "status": "error",
+                        "code": 504,
+                        "name": "Gateway Timeout",
+                        "description": "Request timed out"}), 504
 
                 except Exception as e:
                     self.logger.error(f"Proxy to node {node} failed: {e}")
