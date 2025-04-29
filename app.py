@@ -14,6 +14,7 @@ from flask import Flask, request, jsonify, abort, make_response
 
 from filters import *
 
+from typing import List
 
 
 def normalize_url(url):
@@ -49,9 +50,22 @@ class SysPiper:
         self.api_key = self.config.get("api_key", "default_key")
         self.log_level = self.config.get("log_level", "INFO").upper()
         self.myip_url = self.config.get("myip_url", "https://myip.dk")
-        self.allowed_ips = self.config.get("allowed_ips", ["0.0.0.0/0", ])
+        self._allowed_ips = self.config.get("allowed_ips", None)
         self.allowed_nodes = self.config.get("allowed_nodes", {})
         self.allowed_paths = self.config.get("allowed_paths", {})
+
+        self.allowed_ips: List[paddress.IPv4Address | ipaddress.IPv6Address] = []
+        self.allowed_networks: List[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+
+        if not self._allowed_ips:
+            self._allowed_ips = ["0.0.0.0/0"]
+
+        for cidr in self._allowed_ips:
+            if '/' in cidr:
+                self.allowed_networks.append(ipaddress.ip_network(cidr, strict=False))
+            else:
+                self.allowed_ips.append(ipaddress.ip_address(cidr))
+
 
         self.listen_ip = None
         self.listen_port = None
@@ -76,20 +90,17 @@ class SysPiper:
             sys.exit(1)
         return config
 
-    def is_remote_addr_allowed(self, cidr: str):
+    def is_remote_addr_allowed(self, cidr: str) -> bool:
         """Check if client IP is inside allowed IPs or networks."""
         client_ip = ipaddress.ip_address(cidr)
 
+        for entry in self.allowed_networks:
+            if client_ip in entry:
+                return True
+
         for entry in self.allowed_ips:
-            if '/' in entry:
-                # Entry is a network
-                network = ipaddress.ip_network(entry, strict=False)
-                if client_ip in network:
-                    return True
-            else:
-                # Entry is a single IP
-                if client_ip == ipaddress.ip_address(entry):
-                    return True
+            if client_ip == entry:
+                return True
 
         return False
 
@@ -134,6 +145,11 @@ class SysPiper:
                     self.logger.debug(f"Proxying to {full_url}")
                     proxy_response = requests.get(full_url, headers=headers, timeout=5)
                     proxy_response.raise_for_status()
+
+                except requests.exceptions.Timeout as e:
+                    self.logger.error(f"Timeout proxying to {node}: {e}")
+                    abort(504, description="Gateway Timeout")
+
                 except Exception as e:
                     self.logger.error(f"Proxy to node {node} failed: {e}")
                     abort(502, description=f"Failed to fetch from target node: {str(e)}")
@@ -187,8 +203,10 @@ class SysPiper:
 
     def substitute(self, node: str, alias: str) -> str | None:
 
-        uri_path = self.allowed_paths[alias]
-        full_url = urljoin(self.allowed_nodes[node], uri_path)
+        uri_path = self.allowed_paths[alias].lstrip("/")
+        base = self.allowed_nodes[node].rstrip("/")
+
+        full_url = urljoin(base, uri_path)
 
         try:
             if SysPiper._contains_substitution(full_url):
