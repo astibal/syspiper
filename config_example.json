@@ -4,21 +4,25 @@
   "myip.url": "https://myip.dk",
   "allowed_ips": ["0.0.0.0/0"],
   "allowed_nodes": {
-    "node1": "http://192.168.0.101:8080",
-    "node2": "https://server02.example.com",
-    "nodex": "http://127.0.0.1:8080"
+    "node8080": "http://127.0.0.1:8080",
+    "sx1": "https://sx1u:55555"
   },
   "allowed_paths": {
-    "cpu": "/api/~~keys~~/cpu"
+    "sx_status": "/api/status/~~replace_ping~~",
+    "sx_webhook": "/webhook/~~keys~~/info"
   },
   "parts": {
     "@keys": {
-      "node1": "/node1-secret/",
-      "node2": "/node2-secret/"
+      "sx1": "sx1-webhook-secret"
+    },
+    "@replace_ping": {
+      "sx1": "ping"
     }
   },
   "headers": {
-    "node1": [ [ "X-Api-Key", "anotherkey123"] ],
-    "node2": [ [ "X-Api-Key", "anotherkey2"] ]
+    "sx1": [ [ "X-Api-Key", "verysecret"] ]
+  },
+  "tls_verify":{
+    "sx1": false
   }
 }
