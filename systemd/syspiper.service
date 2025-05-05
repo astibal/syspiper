@@ -6,8 +6,16 @@ After=network-online.target
 Environment=IP_PORT=0.0.0.0:8181
 ExecStart=/bin/bash -c 'exec .venv/bin/gunicorn -w 4 -b ${IP_PORT} wsgi:app --access-logfile - --error-logfile -'
 
-# If VRF is needed
-# ExecStart=/bin/bash -c 'exec /usr/sbin/ip vrf exec vrf-blue .venv/bin/gunicorn -w 4 -b ${IP_PORT} wsgi:app --access-logfile - --error-logfile -'
+# If VRF is needed - use override via `systemctl edit syspiper`
+# [Service]
+# User=syspiper
+# ExecStart=
+# ExecStart=/usr/sbin/ip vrf exec blue .venv/bin/gunicorn -w 4 -b ${IP_PORT} wsgi:app --access-logfile - --error-logfile -
+# ProtectSystem=full
+# ReadWritePaths=/sys/fs/cgroup/system.slice/syspiper.service
+# ProtectControlGroups=no
+# Delegate=yes
+# RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
 
 WorkingDirectory=/opt/syspiper/self
 Restart=always
