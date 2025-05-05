@@ -123,13 +123,15 @@ class SysPiper:
 
     def proxy_it(self, node):
         """Proxy the request to the remote node."""
+        rq_path = request.path
         target_url = self.allowed_nodes.get(node)
         if not target_url:
             abort(404, description="Node not allowed")
 
         try:
             headers = {"X-API-Key": self.api_key}
-            endpoint = request.path.replace(f"/{node}", "")  # remove /<node> part
+
+            endpoint = rq_path.replace(f"/{node}", "")  # remove /<node> part
             full_url = f"{target_url}{endpoint}"
 
             # Note: this may seem nice to add at first glance, but proxyable are intended to be proxied
@@ -383,22 +385,34 @@ class SysPiper:
         self.remote_proxy = remote_proxy
 
 
-        @self.app.route("/<alias>@<node>", methods=["GET"])
-        def remote_via_dollars(node,alias):
-            """Handler for flat /<node>$<alias> pattern."""
+        @self.app.route("/<path:full>", methods=["GET"])
+        def full_path(full: str):
+            """Handler for flat /<alias>@<node> + optionally /other_syspiper """
             self.check_auth()
 
-            # if not '@' in node_alias or not node_alias.count("$") != 1:
-            #     abort(400, description="Invalid format, expected /<node>@<alias>")
-            #
-            # alias, node = node_alias.split("@", 1)
+            full = brutal_filter(full, additional_chars="/")[:256]
+            url_parts = urlparse(full)
+            full = url_parts.path
 
-            if node not in self.allowed_nodes:
-                abort(404, description="Unknown node")
-            if alias not in self.allowed_paths:
-                abort(404, description="Unknown alias")
+            if not '@' in full or not full.count("$") != 1 or not full.count('/') <= 1:
+                abort(400, description="Invalid format, expected /<node>@<alias>")
 
-            return self.remote_proxy(node, alias)
+
+            remote_alias, remote_node = full.split("@", 1)
+            next_hop = None
+            if '/' in remote_node:
+                remote_node, next_hop = remote_node.split("/", 1)
+
+            if next_hop is not None:
+                return self.proxy_it(next_hop)
+            else:
+
+                if remote_node not in self.allowed_nodes:
+                    abort(404, description="Unknown node")
+                if remote_alias not in self.allowed_paths:
+                    abort(404, description="Unknown alias")
+
+                return self.remote_proxy(remote_node, remote_alias)
 
     def run(self, host="0.0.0.0", port=8080):
         """Start the Flask application."""
