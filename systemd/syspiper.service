@@ -3,16 +3,13 @@ Description=SysPiper - Hardened
 After=network-online.target
 
 [Service]
-Environment=WORKDIR=/home/syspiper
-Environment=CONFIG_PATH=${WORKDIR}/config.json
 Environment=IP_PORT=0.0.0.0:8181
-
-ExecStart=/bin/bash -c 'exec ${WORKDIR}/.venv/bin/gunicorn -w 4 -b ${IP_PORT} wsgi:app --chdir ${WORKDIR} --access-logfile - --error-logfile -'
+ExecStart=/bin/bash -c 'exec .venv/bin/gunicorn -w 4 -b ${IP_PORT} wsgi:app --access-logfile - --error-logfile -'
 
 # If VRF is needed
-# ExecStart=/bin/bash -c 'exec /usr/sbin/ip vrf exec vrf-blue ${WORKDIR}/.venv/bin/gunicorn -w 4 -b ${IP_PORT} wsgi:app --chdir ${WORKDIR} --access-logfile - --error-logfile -'
+# ExecStart=/bin/bash -c 'exec /usr/sbin/ip vrf exec vrf-blue .venv/bin/gunicorn -w 4 -b ${IP_PORT} wsgi:app --access-logfile - --error-logfile -'
 
-WorkingDirectory=${WORKDIR}
+WorkingDirectory=/opt/syspiper/self
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
@@ -23,7 +20,7 @@ Environment=PYTHONUNBUFFERED=1
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/home/syspiper
+ReadPaths=/opt/syspiper/self
 
 # Kernel protection
 ProtectKernelModules=yes
