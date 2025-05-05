@@ -20,7 +20,7 @@ Environment=PYTHONUNBUFFERED=1
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadPaths=/opt/syspiper/self
+ReadOnlyPaths=/opt/syspiper/self
 
 # Kernel protection
 ProtectKernelModules=yes
