@@ -16,5 +16,9 @@
       "node1": "/node1-secret/",
       "node2": "/node2-secret/"
     }
+  },
+  "headers": {
+    "node1": [ [ "X-Api-Key", "anotherkey123"] ],
+    "node2": [ [ "X-Api-Key", "anotherkey2"] ]
   }
 }
