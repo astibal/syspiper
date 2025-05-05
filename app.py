@@ -8,6 +8,7 @@ import argparse
 import psutil
 import ipaddress
 import posixpath
+from functools import partial
 
 from urllib.parse import urlparse, urljoin, urlunparse
 from flask import Flask, request, jsonify, abort, make_response
@@ -53,9 +54,12 @@ class SysPiper:
         self._allowed_ips = self.config.get("allowed_ips", None)
         self.allowed_nodes = self.config.get("allowed_nodes", {})
         self.allowed_paths = self.config.get("allowed_paths", {})
+        self.tls_verify = self.config.get("tls_verify", {})
 
         self.allowed_ips: List[paddress.IPv4Address | ipaddress.IPv6Address] = []
         self.allowed_networks: List[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+
+        self.remote_proxy = None
 
         if not self._allowed_ips:
             self._allowed_ips = ["0.0.0.0/0"]
@@ -117,48 +121,52 @@ class SysPiper:
         if api_key != self.api_key:
             abort(401, description="Unauthorized")
 
+    def proxy_it(self, node):
+        """Proxy the request to the remote node."""
+        target_url = self.allowed_nodes.get(node)
+        if not target_url:
+            abort(404, description="Node not allowed")
+
+        try:
+            headers = {"X-API-Key": self.api_key}
+            endpoint = request.path.replace(f"/{node}", "")  # remove /<node> part
+            full_url = f"{target_url}{endpoint}"
+
+            # Note: this may seem nice to add at first glance, but proxyable are intended to be proxied
+            #       to next-hop SysPiper, templating is not really desirable.
+            #       This may change, but I find it hard to imagine how that is useful.
+
+            # full_url = self.substitute(node, endpoint)
+
+            # Let's keep the sanity/misconfig check here. No escapes allowed!
+            if not full_url or SysPiper._contains_substitution(full_url):
+                abort(502, description="substitution error: data missing or formatting error")
+
+            self.logger.debug(f"Proxying to {full_url}")
+            proxy_response = requests.get(full_url, headers=headers, timeout=5)
+            proxy_response.raise_for_status()
+
+        except requests.exceptions.Timeout as e:
+            self.logger.error(f"Timeout proxying to {node}: {e}")
+            return jsonify({
+                "status": "error",
+                "code": 504,
+                "name": "Gateway Timeout",
+                "description": "Request timed out"}), 504
+
+        except Exception as e:
+            self.logger.error(f"Proxy to node {node} failed: {e}")
+            abort(502, description=f"Failed to fetch from target node: {str(e)}")
+
+        return jsonify(proxy_response.json())
+
     def proxyable(self, func):
         """Decorator to proxy the request if 'node' parameter is present."""
 
         def wrapper(*args, **kwargs):
             node = kwargs.get('node')
             if node:
-                target_url = self.allowed_nodes.get(node)
-                if not target_url:
-                    abort(404, description="Node not allowed")
-
-                try:
-                    headers = {"X-API-Key": self.api_key}
-                    endpoint = request.path.replace(f"/{node}", "")  # remove /<node> part
-                    full_url = f"{target_url}{endpoint}"
-
-                    # Note: this may seem nice to add at first glance, but proxyable are intended to be proxied
-                    #       to next-hop SysPiper, templating is not really desirable.
-                    #       This may change, but I find it hard to imagine how that is useful.
-
-                    # full_url = self.substitute(node, endpoint)
-
-                    # Let's keep the sanity/misconfig check here. No escapes allowed!
-                    if not full_url or SysPiper._contains_substitution(full_url):
-                        abort(502, description="substitution error: data missing or formatting error")
-
-                    self.logger.debug(f"Proxying to {full_url}")
-                    proxy_response = requests.get(full_url, headers=headers, timeout=5)
-                    proxy_response.raise_for_status()
-
-                except requests.exceptions.Timeout as e:
-                    self.logger.error(f"Timeout proxying to {node}: {e}")
-                    return jsonify({
-                        "status": "error",
-                        "code": 504,
-                        "name": "Gateway Timeout",
-                        "description": "Request timed out"}), 504
-
-                except Exception as e:
-                    self.logger.error(f"Proxy to node {node} failed: {e}")
-                    abort(502, description=f"Failed to fetch from target node: {str(e)}")
-
-                return jsonify(proxy_response.json())
+                return self.proxy_it(node)
             else:
                 # Local call
                 result = func(*args, **kwargs)
@@ -354,7 +362,8 @@ class SysPiper:
 
                 self.logger.debug(f"Proxying remote request to {full_url}")
 
-                proxy_response = requests.get(full_url, headers=self.get_node_headers(node), timeout=3)
+                verify = self.tls_verify.get(node, True)
+                proxy_response = requests.get(full_url, headers=self.get_node_headers(node), timeout=3, verify=verify)
                 proxy_response.raise_for_status()
 
             except requests.exceptions.Timeout as e:
@@ -370,6 +379,26 @@ class SysPiper:
                 abort(502, description=f"Failed to fetch from target node: {str(e)}")
 
             return jsonify(proxy_response.json())
+        # we must keep the reference to the remote_proxy function to allow remote_via_dollars to work
+        self.remote_proxy = remote_proxy
+
+
+        @self.app.route("/<alias>@<node>", methods=["GET"])
+        def remote_via_dollars(node,alias):
+            """Handler for flat /<node>$<alias> pattern."""
+            self.check_auth()
+
+            # if not '@' in node_alias or not node_alias.count("$") != 1:
+            #     abort(400, description="Invalid format, expected /<node>@<alias>")
+            #
+            # alias, node = node_alias.split("@", 1)
+
+            if node not in self.allowed_nodes:
+                abort(404, description="Unknown node")
+            if alias not in self.allowed_paths:
+                abort(404, description="Unknown alias")
+
+            return self.remote_proxy(node, alias)
 
     def run(self, host="0.0.0.0", port=8080):
         """Start the Flask application."""
