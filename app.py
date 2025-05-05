@@ -9,6 +9,7 @@ import psutil
 import ipaddress
 import posixpath
 from functools import partial
+from fnmatch import fnmatchcase as glob_match
 
 from urllib.parse import urlparse, urljoin, urlunparse
 from flask import Flask, request, jsonify, abort, make_response
@@ -55,6 +56,7 @@ class SysPiper:
         self.allowed_nodes = self.config.get("allowed_nodes", {})
         self.allowed_paths = self.config.get("allowed_paths", {})
         self.tls_verify = self.config.get("tls_verify", {})
+        self.routes = self.config.get("routes", {}) # remote node -> next_hop (wildcard supported)
 
         self.allowed_ips: List[paddress.IPv4Address | ipaddress.IPv6Address] = []
         self.allowed_networks: List[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
@@ -402,6 +404,11 @@ class SysPiper:
             next_hop = None
             if '/' in remote_node:
                 remote_node, next_hop = remote_node.split("/", 1)
+            else:
+                for nd_glob, nxt in self.routes.items():
+                    if glob_match(remote_node, nd_glob):
+                        next_hop = nxt
+                        break
 
             if next_hop is not None:
                 return self.proxy_it(next_hop)
