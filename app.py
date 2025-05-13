@@ -11,6 +11,11 @@ import posixpath
 from functools import partial
 from fnmatch import fnmatchcase as glob_match
 
+import io
+import importlib.util
+from contextlib import redirect_stdout, redirect_stderr
+from sexec import safe_exec
+
 from urllib.parse import urlparse, urljoin, urlunparse
 from flask import Flask, request, jsonify, abort, make_response
 
@@ -178,6 +183,30 @@ class SysPiper:
 
         wrapper.__name__ = func.__name__
         return wrapper
+
+    def _run_sandbox(self, name):
+        name = brutal_filter(name)[:256].lower()
+        script_path = os.path.join("scripts", f"{name}.py")
+
+        result = safe_exec(name, script_path)
+        if result is None:
+            self.logger.error(f"Script '{name}' failed without response")
+            return None
+
+        for key in ("error", "result"):
+            if key in result:
+                msg = result[key]
+                if isinstance(msg, dict):
+                    continue
+                for line in str(msg).splitlines():
+                    level = self.logger.error if key == "error" else self.logger.info
+                    level(f"Script '{name}': {line}")
+
+        if "result" in result and isinstance(result["result"], dict):
+            return jsonify(result["result"])
+
+        self.logger.error(f"Script '{name}': invalid or missing result")
+        return None
 
     def register_error_handlers(self):
         """Register global JSON error handlers."""
@@ -386,7 +415,6 @@ class SysPiper:
         # we must keep the reference to the remote_proxy function to allow remote_via_dollars to work
         self.remote_proxy = remote_proxy
 
-
         @self.app.route("/<path:full>", methods=["GET"])
         def full_path(full: str):
             """Handler for flat /<alias>@<node> + optionally /other_syspiper """
@@ -397,6 +425,16 @@ class SysPiper:
             full = url_parts.path
 
             if not '@' in full or not full.count("$") != 1 or not full.count('/') <= 1:
+
+                # script pre-flight check
+                if os.path.isfile(os.path.join("scripts", f"{full}.py")):
+                    #ret = self._run_script(full)
+                    ret = self._run_sandbox(full)
+                    if ret is not None:
+                        return ret
+                    else:
+                        abort(422, description="Endpoint error")
+
                 abort(400, description="Invalid format, expected /<node>@<alias>")
 
 
