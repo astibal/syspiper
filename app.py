@@ -294,7 +294,7 @@ class SysPiper:
             self.logger.debug(f"Measured CPU usage: {cpu_percent}%")
             return {
                 "status": "ok",
-                "cpu_percent": cpu_percent
+                "percent": cpu_percent
             }
 
         # RAM
@@ -343,8 +343,8 @@ class SysPiper:
             self.logger.debug(f"Measured network IO: sent={net.bytes_sent}, recv={net.bytes_recv}")
             return {
                 "status": "ok",
-                "bytes_sent": net.bytes_sent,
-                "bytes_recv": net.bytes_recv
+                "sent": net.bytes_sent,
+                "recv": net.bytes_recv
             }
 
         @self.app.route("/remote/<node>/<alias>", methods=["GET"])
