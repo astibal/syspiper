@@ -30,13 +30,40 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 
-cp apparmor.d/syspiper /etc/apparmor.d/
-cp apparmor.d/tunables/syspiper /etc/apparmor.d/tunables/
+# sample config file - edit to your liking
+cp config_example.json config.json
+
+# Optionally, add user to run the service
+adduser syspiper --help --disabled-password --home /opt/syspiper/
+
+# make link to systemd unit and enable/customize service
+ln -s /opt/syspiper/self/systemd/syspiper.service /etc/systemd/system/syspiper.service
+systemctl enable syspiper
+
+# optionally (e.g. for vrf support)
+systemctl edit syspiper
+
+# finally, run the service
+systemctl start syspiper
+
+# don't use apparmor for now - it doesn't work with gunicorn
+
+# cp apparmor.d/syspiper /etc/apparmor.d/
+# cp apparmor.d/tunables/syspiper /etc/apparmor.d/tunables/
 ```
 
 
-# Run:
-python app.py --config /etc/stats-proxy/prod-config.json
+# Run 
+
+## Quick test with python server:
+`python app.py`
+
+## Test with gunicorn from shell
+This will launch gunicorn on foreground to see if it works
+`./run.here.sh`
+
+## Production
+... you should indeed use systemd to start `syspiper` service.
 
 # Config example:
 
