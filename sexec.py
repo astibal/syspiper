@@ -81,8 +81,7 @@ def safe_exec(name: str, script_path: str) -> dict | None:
                         os.exit(1)
 
                     signal.signal(signal.SIGALRM, _handle_timeout)
-                    # don't keep commented out
-                    # signal.alarm(5)  # Enforce wall-clock timeout
+                    signal.alarm(5)  # Enforce wall-clock timeout
 
                     temp_link = Path(tempdir) / "lib"
                     # Try to chdir to private sandbox dir
