@@ -1,4 +1,5 @@
 import os
+import sys
 import pwd
 import json
 import shutil
@@ -50,11 +51,7 @@ def safe_exec(name: str, script_path: str) -> dict | None:
                 # Load script
                 spec = importlib.util.spec_from_file_location(name, script_path)
 
-                # Try to chdir to private sandbox dir
-                try:
-                    os.chdir(tempdir)
-                except Exception:
-                    os.chdir("/")
+
 
                 @contextmanager
                 def temporary_sys_path(path):
@@ -65,25 +62,38 @@ def safe_exec(name: str, script_path: str) -> dict | None:
                     finally:
                         sys.path = original
 
-                with temporary_sys_path(Path(f"{script_path}/lib").resolve()):
+                script_dir = Path(script_path).parent
+                lib_path = Path(script_dir) / "lib/"
+                with temporary_sys_path(lib_path.resolve()) as tt:
                     module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(module)
 
-                resource.setrlimit(resource.RLIMIT_NOFILE, (10, 10))  # lock down after import
+                    resource.setrlimit(resource.RLIMIT_NOFILE, (10, 10))  # lock down after import
 
-                if not hasattr(module, "main") or not callable(module.main):
-                    yell(json.dumps({"error": "main() not found or not callable"}))
-                    os._exit(0)
+                    if not hasattr(module, "main") or not callable(module.main):
+                        yell(json.dumps({"error": "main() not found or not callable"}))
+                        os._exit(0)
 
-                # Inside the child fork
-                import signal
-                def _handle_timeout(signum, frame):
-                    yell(json.dumps({"error": "timeout"}))
-                    os.exit(1)
+                    # Inside the child fork
+                    import signal
+                    def _handle_timeout(signum, frame):
+                        yell(json.dumps({"error": "timeout"}))
+                        os.exit(1)
 
-                signal.signal(signal.SIGALRM, _handle_timeout)
-                signal.alarm(5)  # Enforce wall-clock timeout
-                result = module.main()
+                    signal.signal(signal.SIGALRM, _handle_timeout)
+                    # don't keep commented out
+                    # signal.alarm(5)  # Enforce wall-clock timeout
+
+                    temp_link = Path(tempdir) / "lib"
+                    # Try to chdir to private sandbox dir
+                    try:
+                        temp_link.symlink_to(os.getcwd() / lib_path, target_is_directory=True)
+                        os.chdir(tempdir)
+                    except Exception:
+                        os.chdir("/")
+
+                    result = module.main()
+                    temp_link.unlink()
 
                 if isinstance(result, dict):
                     yell(json.dumps({"result": result}))
