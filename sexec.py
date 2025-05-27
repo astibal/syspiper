@@ -6,6 +6,9 @@ import tempfile
 import importlib.util
 import resource
 import time
+from contextlib import contextmanager
+from pathlib import Path
+
 
 def safe_exec(name: str, script_path: str) -> dict | None:
 
@@ -53,9 +56,18 @@ def safe_exec(name: str, script_path: str) -> dict | None:
                 except Exception:
                     os.chdir("/")
 
+                @contextmanager
+                def temporary_sys_path(path):
+                    original = sys.path.copy()
+                    sys.path.insert(0, str(path))
+                    try:
+                        yield
+                    finally:
+                        sys.path = original
 
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
+                with temporary_sys_path(Path(f"{script_path}/lib").resolve()):
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
 
                 resource.setrlimit(resource.RLIMIT_NOFILE, (10, 10))  # lock down after import
 
