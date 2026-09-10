@@ -1,9 +1,9 @@
 # SysPiper - system info JSON gateway with proxy support and loop protection
 
-This lightweight GET-only Flask app serves system info as JSON.  
-It operates in read-only mode, does not modify the system,
-and accepts no parameters except fixed endpoints and parseable
-elements from URL.  
+This lightweight GET-only Flask app serves system info as JSON.
+Built-in endpoints read system information. Optional administrator-installed
+Python scripts run under the service account with resource and time limits.
+The API accepts fixed endpoints and parseable elements from the URL.
 
 Key features:
 
@@ -13,17 +13,20 @@ Key features:
 
 - Everything is static or statically templated. There is no query run if not configured by you.
 
-- Stateless - no data are written to system
+- Built-in endpoints are stateless; script execution uses temporary directories
 
 - Supports proxying to next-hop syspiper nodes, including JSON queries
 
 # Install
 ```shell
-# root is not needed for most cases 
-cd /home/syspiper
+# Example systemd installation (administration commands require root).
+# For local development, clone into your own directory and skip service setup.
+adduser --system --group --home /opt/syspiper syspiper
+cd /opt/syspiper
 
 # clone to this very directory
 git clone ssh://git@github.com/astibal/syspiper self
+cd self
 
 # create virtual environment
 python3 -m venv .venv
@@ -33,8 +36,9 @@ pip install -r requirements.txt
 # sample config file - edit to your liking
 cp config_example.json config.json
 
-# Optionally, add user to run the service
-adduser syspiper --help --disabled-password --home /opt/syspiper/
+# Allow the service account to read its configuration.
+chown root:syspiper config.json
+chmod 640 config.json
 
 # make link to systemd unit and enable/customize service
 ln -s /opt/syspiper/self/systemd/syspiper.service /etc/systemd/system/syspiper.service
@@ -46,7 +50,9 @@ systemctl edit syspiper
 # finally, run the service
 systemctl start syspiper
 
-# don't use apparmor for now - it doesn't work with gunicorn
+# AppArmor remains optional and experimental: compilation is checked, but
+# the profile has not been verified against a live Gunicorn deployment.
+# Adjust tunables/syspiper to match your installation before trying it.
 
 # cp apparmor.d/syspiper /etc/apparmor.d/
 # cp apparmor.d/tunables/syspiper /etc/apparmor.d/tunables/
@@ -65,10 +71,36 @@ This will launch gunicorn on foreground to see if it works
 ## Production
 ... you should indeed use systemd to start `syspiper` service.
 
+The supplied unit requires the `syspiper` user and group and grants no Linux
+capabilities by default. Existing installations must create that account and
+ensure it can read the application, virtualenv, scripts and configuration.
+Privileged VRF setups need an explicit override; the default unit listens on
+the unprivileged port 8181.
+
+## Scripts
+
+Only install scripts you trust. The runner limits resource use, but scripts
+retain the service user's filesystem and network access. It is not an isolation
+boundary for third-party Python code. Script execution as root is refused.
+
+`scripts/examples/date.py` is available as `/examples/date`, with the same API
+key and IP checks as other endpoints. Script names are case-sensitive; traversal
+and symlinks pointing outside `scripts/` are rejected. Each script must provide
+`main()` returning a dictionary or a string. Helper imports use a `lib/` directory
+beside the script, also available as `lib/` in the temporary working directory.
+
+Each invocation starts a fresh interpreter. A five-second deadline covers both
+imports and `main()`, and the parent terminates the process group on timeout.
+CPU time is limited to five seconds and address space to 128 MiB. stdout/stderr
+are captured separately from the result, drained without blocking the script,
+and logged up to 64 KiB. JSON results are limited to 1 MiB. Script errors return
+HTTP 422 with a JSON error body for API clients.
+
 # Config example:
 
 
-> Note: API key is required, it may contain only alphanumeric characters and -_@.
+> `api_key` is required: a non-empty string of at most 256 characters.
+> The supplied key must match exactly; input is not normalized.
 ```json
 {
   "api_key": "secret123",
@@ -117,6 +149,12 @@ This will launch gunicorn on foreground to see if it works
 - `headers` is a map of headers used by specific nodes.
 
 - `tls_verify` is a map of bool values indicating TLS verification. Default is indeed `true`, you can override it at your own risk.  
+
+- `routes` maps a remote node name or wildcard to a next-hop Syspiper node.
+  For example, `{"target-*": "hop"}` forwards `/status@target-one` via `hop`.
+  Each Syspiper proxy increments `X-SysPiper-Hops`; attempts to forward beyond
+  eight hops return HTTP 508. Deploy the updated version on every node in a
+  proxy chain so the limit is preserved end to end.
   
   
 
@@ -155,4 +193,13 @@ The same can be achieved by simpler:
 `curl http://localhost:8181/status@sx1/node8080  -H "X-API-Key: secret123"`
 
 > You -> syspiper(localhost) -> syspiper(node8080) -> 3rd_json_api
-``
+
+## Regression tests
+
+With the dependencies installed, run as an unprivileged user from the repository:
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+Tests use temporary configurations and scripts, with HTTP upstreams mocked.

@@ -8,20 +8,23 @@ import argparse
 import psutil
 import ipaddress
 import posixpath
-from functools import partial
+from functools import wraps
 from fnmatch import fnmatchcase as glob_match
-
-import io
-import importlib.util
-from contextlib import redirect_stdout, redirect_stderr
+from pathlib import Path
+from hmac import compare_digest
 from sexec import safe_exec
 
 from urllib.parse import urlparse, urljoin, urlunparse
 from flask import Flask, request, jsonify, abort, make_response
-
-from filters import *
+from werkzeug.exceptions import HTTPException
+from markupsafe import escape
 
 from typing import List
+
+
+class ProxyLoopDetected(HTTPException):
+    code = 508
+    description = "Proxy hop limit exceeded"
 
 
 def normalize_url(url):
@@ -51,10 +54,14 @@ def normalize_url(url):
 class SysPiper:
     """Main application class for SysPiper."""
 
+    MAX_PROXY_HOPS = 8
+
     def __init__(self, config_path):
         """Initialize the app with configuration."""
         self.config = self.load_config(config_path)
-        self.api_key = self.config.get("api_key", "default_key")
+        self.api_key = self.config.get("api_key")
+        if not isinstance(self.api_key, str) or not 0 < len(self.api_key) <= 256:
+            raise ValueError("api_key must be a non-empty string of at most 256 characters")
         self.log_level = self.config.get("log_level", "INFO").upper()
         self.myip_url = self.config.get("myip_url", "https://myip.dk")
         self._allowed_ips = self.config.get("allowed_ips", None)
@@ -63,12 +70,12 @@ class SysPiper:
         self.tls_verify = self.config.get("tls_verify", {})
         self.routes = self.config.get("routes", {}) # remote node -> next_hop (wildcard supported)
 
-        self.allowed_ips: List[paddress.IPv4Address | ipaddress.IPv6Address] = []
+        self.allowed_ips: List[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
         self.allowed_networks: List[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
 
         self.remote_proxy = None
 
-        if not self._allowed_ips:
+        if self._allowed_ips is None:
             self._allowed_ips = ["0.0.0.0/0"]
 
         for cidr in self._allowed_ips:
@@ -88,6 +95,7 @@ class SysPiper:
 
         # Setup Flask app
         self.app = Flask(__name__)
+        self.app.before_request(self.check_auth)
         self.setup_routes()
         self.register_error_handlers()
 
@@ -120,80 +128,91 @@ class SysPiper:
         if not self.is_remote_addr_allowed(request.remote_addr):
             abort(401, description="Unauthorized")
 
-        api_key = request.headers.get("X-API-Key")
-        api_key = brutal_filter(api_key)[:256]
-        self.logger.debug(
-            f"Received API key: {api_key}, expected: {self.api_key}"
-        )
-        if api_key != self.api_key:
+        api_key = request.headers.get("X-API-Key", "")
+        if not compare_digest(api_key.encode("utf-8"), self.api_key.encode("utf-8")):
             abort(401, description="Unauthorized")
 
-    def proxy_it(self, node):
+    def proxy_it(self, node, endpoint=None):
         """Proxy the request to the remote node."""
-        rq_path = request.path
         target_url = self.allowed_nodes.get(node)
         if not target_url:
             abort(404, description="Node not allowed")
 
+        hops = request.headers.get("X-SysPiper-Hops", "0")
+        if not re.fullmatch(r"[0-9]{1,2}", hops):
+            abort(400, description="Invalid proxy hop count")
+        if int(hops) >= self.MAX_PROXY_HOPS:
+            raise ProxyLoopDetected()
+
+        headers = {"X-API-Key": self.api_key, "X-SysPiper-Hops": str(int(hops) + 1)}
+        full_url = target_url.rstrip("/") + (endpoint if endpoint is not None else request.path)
+        if SysPiper._contains_substitution(full_url):
+            abort(502, description="substitution error: data missing or formatting error")
+
         try:
-            headers = {"X-API-Key": self.api_key}
-
-            endpoint = rq_path.replace(f"/{node}", "")  # remove /<node> part
-            full_url = f"{target_url}{endpoint}"
-
-            # Note: this may seem nice to add at first glance, but proxyable are intended to be proxied
-            #       to next-hop SysPiper, templating is not really desirable.
-            #       This may change, but I find it hard to imagine how that is useful.
-
-            # full_url = self.substitute(node, endpoint)
-
-            # Let's keep the sanity/misconfig check here. No escapes allowed!
-            if not full_url or SysPiper._contains_substitution(full_url):
-                abort(502, description="substitution error: data missing or formatting error")
-
-            self.logger.debug(f"Proxying to {full_url}")
+            self.logger.debug("Proxying to node %s", node)
             proxy_response = requests.get(full_url, headers=headers, timeout=5)
+            if proxy_response.status_code == 508:
+                raise ProxyLoopDetected()
             proxy_response.raise_for_status()
+            return jsonify(proxy_response.json())
 
-        except requests.exceptions.Timeout as e:
-            self.logger.error(f"Timeout proxying to {node}: {e}")
+        except requests.exceptions.Timeout:
+            self.logger.error("Timeout proxying to node %s", node)
             return jsonify({
                 "status": "error",
                 "code": 504,
                 "name": "Gateway Timeout",
                 "description": "Request timed out"}), 504
 
+        except HTTPException:
+            raise
         except Exception as e:
-            self.logger.error(f"Proxy to node {node} failed: {e}")
-            abort(502, description=f"Failed to fetch from target node: {str(e)}")
-
-        return jsonify(proxy_response.json())
+            self.logger.error("Proxy to node %s failed (%s)", node, type(e).__name__)
+            abort(502, description="Failed to fetch from target node")
 
     def proxyable(self, func):
         """Decorator to proxy the request if 'node' parameter is present."""
 
+        @wraps(func)
         def wrapper(*args, **kwargs):
             node = kwargs.get('node')
             if node:
-                return self.proxy_it(node)
+                return self.proxy_it(node, request.path.rsplit("/", 1)[0])
             else:
                 # Local call
                 result = func(*args, **kwargs)
                 return result
 
-        wrapper.__name__ = func.__name__
         return wrapper
 
-    def _run_sandbox(self, name):
-        name = brutal_filter(name)[:256].lower()
-        script_path = os.path.join("scripts", f"{name}.py")
+    @staticmethod
+    def _script_path(name):
+        if len(name) > 256 or not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", name):
+            return None
+        if any(part in (".", "..") for part in name.split("/")):
+            return None
+        try:
+            scripts_dir = Path("scripts").resolve()
+            script_path = (scripts_dir / f"{name}.py").resolve()
+            if script_path.is_relative_to(scripts_dir) and script_path.is_file():
+                return script_path
+        except (OSError, RuntimeError):
+            # Invalid paths and symlink loops must not turn into a server error.
+            pass
+        return None
 
-        result = safe_exec(name, script_path)
+    def _run_sandbox(self, name):
+        script_path = self._script_path(name)
+        if script_path is None:
+            return None
+
+        result = safe_exec(name, str(script_path))
         if result is None:
             self.logger.error(f"Script '{name}' failed without response")
             return None
 
-        for key in ("error", "result"):
+        for key in ("error", "output", "result"):
             if key in result:
                 msg = result[key]
                 if isinstance(msg, dict):
@@ -216,9 +235,11 @@ class SysPiper:
         @self.app.errorhandler(403)
         @self.app.errorhandler(404)
         @self.app.errorhandler(405)
+        @self.app.errorhandler(422)
         @self.app.errorhandler(500)
         @self.app.errorhandler(502)
         @self.app.errorhandler(504)
+        @self.app.errorhandler(ProxyLoopDetected)
         def handle_error(error):
             """Return appropriate error response."""
             accept = request.headers.get('Accept', '*/*')
@@ -240,7 +261,7 @@ class SysPiper:
             else:
                 # Probably a browser - return simple HTML
                 html_response = \
-                    f"<html><head><title>{error.code} {error.name}</title></head><body><h1>{error.code} {error.name}</h1><p>{error.description}</p></body></html>"
+                    f"<html><head><title>{error.code} {error.name}</title></head><body><h1>{error.code} {error.name}</h1><p>{escape(error.description)}</p></body></html>"
                 return make_response(html_response, error.code)
 
     @staticmethod
@@ -248,32 +269,22 @@ class SysPiper:
         return "~~" in url
 
     def substitute(self, node: str, alias: str) -> str | None:
-
-        uri_path = self.allowed_paths[alias].lstrip("/")
-        base = self.allowed_nodes[node].rstrip("/")
-
-        full_url = urljoin(base, uri_path)
-
         try:
-            if SysPiper._contains_substitution(full_url):
-                match = re.search(r'~~(\w+)~~', uri_path)
-                if not match:
-                    return None
+            parts = self.config.get("parts", {})
 
-                part = match.group(1)
-                parts = self.config.get("parts", {})
+            def replace_part(match):
+                value = parts[f"@{match.group(1)}"][node]
+                if not isinstance(value, str):
+                    raise ValueError("URL parts must be strings")
+                return value
 
-                if part and f"@{part}" in parts:
-                    node_value = parts.get(f"@{part}",{})[node]
-                    uri_path = full_url.replace(f"~~{part}~~", node_value)
-                    full_url = normalize_url(urljoin(self.allowed_nodes[node], uri_path))
-                else:
-                    return None
-
-            return full_url
-
-        except (KeyError, IndexError, ValueError, re.error) as e:
-            self.logger.error(f"Failed to parse and substitute parts in URL: {e}")
+            uri_path = re.sub(r"~~(\w+)~~", replace_part, self.allowed_paths[alias])
+            base = self.allowed_nodes[node].rstrip("/") + "/"
+            full_url = normalize_url(urljoin(base, uri_path.lstrip("/")))
+            if not SysPiper._contains_substitution(full_url):
+                return full_url
+        except (KeyError, TypeError, ValueError, re.error):
+            self.logger.error("Failed to substitute URL for node %s, alias %s", node, alias)
 
         return None
 
@@ -284,7 +295,6 @@ class SysPiper:
         for tup in node_headers:
             if isinstance(tup, list) and len(tup) == 2:
                 h, v = tup
-                self.logger.debug(f"Adding header '{h}: {v}' to request")
                 headers[h] = v
 
         return headers
@@ -297,7 +307,6 @@ class SysPiper:
         @self.proxyable
         def fetch_ip(node):
             """Fetch public IP by requesting an external service."""
-            self.check_auth()
             try:
                 headers = {"User-Agent": "curl/8.5.0", "Accept": "*/*"}
                 response = requests.get(self.myip_url, timeout=5, headers=headers)
@@ -318,8 +327,7 @@ class SysPiper:
         @self.proxyable
         def cpu(node):
             """Measure CPU usage and return as JSON."""
-            self.check_auth()
-            cpu_percent = psutil.cpu_percent(interval=0.5)
+            cpu_percent = psutil.cpu_percent(interval=1.0)
             self.logger.debug(f"Measured CPU usage: {cpu_percent}%")
             return {
                 "status": "ok",
@@ -332,7 +340,6 @@ class SysPiper:
         @self.proxyable
         def ram(node):
             """Measure RAM usage and return as JSON."""
-            self.check_auth()
             mem = psutil.virtual_memory()
             self.logger.debug(f"Measured RAM usage: {mem.percent}%")
             return {
@@ -350,7 +357,6 @@ class SysPiper:
         @self.proxyable
         def disk(node):
             """Measure disk usage and return as JSON."""
-            self.check_auth()
             disk = psutil.disk_usage('/')
             self.logger.debug(f"Measured disk usage: {disk.percent}%")
             return {
@@ -367,7 +373,6 @@ class SysPiper:
         @self.proxyable
         def net(node):
             """Measure network I/O counters and return as JSON."""
-            self.check_auth()
             net = psutil.net_io_counters()
             self.logger.debug(f"Measured network IO: sent={net.bytes_sent}, recv={net.bytes_recv}")
             return {
@@ -379,8 +384,6 @@ class SysPiper:
         @self.app.route("/remote/<node>/<alias>", methods=["GET"])
         def remote_proxy(node, alias):
             """Proxy only explicitly allowed aliases to remote nodes."""
-            self.check_auth()
-
             if node not in self.allowed_nodes:
                 abort(404, description="Node not allowed")
 
@@ -393,63 +396,55 @@ class SysPiper:
                 if not full_url or SysPiper._contains_substitution(full_url):
                     abort(502, description="substitution error: data missing or formatting error")
 
-                self.logger.debug(f"Proxying remote request to {full_url}")
+                self.logger.debug("Proxying remote request to node %s, alias %s", node, alias)
 
                 verify = self.tls_verify.get(node, True)
                 proxy_response = requests.get(full_url, headers=self.get_node_headers(node), timeout=3, verify=verify)
                 proxy_response.raise_for_status()
+                return jsonify(proxy_response.json())
 
-            except requests.exceptions.Timeout as e:
-                self.logger.error(f"Gateway timeout to {node}: {e}")
+            except requests.exceptions.Timeout:
+                self.logger.error("Gateway timeout to node %s", node)
                 return jsonify({
                     "status": "error",
                     "code": 504,
                     "name": "Gateway Timeout",
                     "description": "Request timed out"}), 504
 
+            except HTTPException:
+                raise
             except Exception as e:
-                self.logger.error(f"General gateway error to {node}: {e}")
-                abort(502, description=f"Failed to fetch from target node: {str(e)}")
+                self.logger.error("Gateway error to node %s (%s)", node, type(e).__name__)
+                abort(502, description="Failed to fetch from target node")
 
-            return jsonify(proxy_response.json())
         # we must keep the reference to the remote_proxy function to allow remote_via_dollars to work
         self.remote_proxy = remote_proxy
 
         @self.app.route("/<path:full>", methods=["GET"])
         def full_path(full: str):
             """Handler for flat /<alias>@<node> + optionally /other_syspiper """
-            self.check_auth()
-
-            full = brutal_filter(full, additional_chars="/")[:256]
-            url_parts = urlparse(full)
-            full = url_parts.path
-
-            if not '@' in full or not full.count("$") != 1 or not full.count('/') <= 1:
-
-                # script pre-flight check
-                if os.path.isfile(os.path.join("scripts", f"{full}.py")):
-                    #ret = self._run_script(full)
+            if '@' not in full:
+                if self._script_path(full) is not None:
                     ret = self._run_sandbox(full)
                     if ret is not None:
                         return ret
                     else:
                         abort(422, description="Endpoint error")
 
-                abort(400, description="Invalid format, expected /<node>@<alias>")
+                abort(400, description="Unknown script or invalid format, expected /<alias>@<node>")
 
-
-            remote_alias, remote_node = full.split("@", 1)
-            next_hop = None
-            if '/' in remote_node:
-                remote_node, next_hop = remote_node.split("/", 1)
-            else:
+            match = re.fullmatch(r"([A-Za-z0-9_.-]+)@([A-Za-z0-9_.-]+)(?:/([A-Za-z0-9_.-]+))?", full)
+            if len(full) > 256 or match is None:
+                abort(400, description="Invalid format, expected /<alias>@<node>[/<next_hop>]")
+            remote_alias, remote_node, next_hop = match.groups()
+            if next_hop is None:
                 for nd_glob, nxt in self.routes.items():
                     if glob_match(remote_node, nd_glob):
                         next_hop = nxt
                         break
 
             if next_hop is not None:
-                return self.proxy_it(next_hop)
+                return self.proxy_it(next_hop, f"/{remote_alias}@{remote_node}")
             else:
 
                 if remote_node not in self.allowed_nodes:

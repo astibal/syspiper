@@ -3,6 +3,8 @@ Description=SysPiper - Hardened
 After=network-online.target
 
 [Service]
+User=syspiper
+Group=syspiper
 Environment=IP_PORT=0.0.0.0:8181
 ExecStart=/bin/bash -c 'exec .venv/bin/gunicorn -w 4 -b ${IP_PORT} wsgi:app --access-logfile - --error-logfile -'
 
@@ -42,9 +44,10 @@ RestrictAddressFamilies=AF_INET AF_INET6
 # Memory protection
 MemoryDenyWriteExecute=yes
 
-# Capabilities (minimum necessary)
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_SYS_ADMIN
-AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_SYS_ADMIN
+# No capabilities are needed for the default unprivileged port.
+# VRF deployments need an explicit, separately reviewed override.
+CapabilityBoundingSet=
+AmbientCapabilities=
 
 # Other safety
 LockPersonality=yes

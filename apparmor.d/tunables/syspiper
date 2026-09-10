@@ -2,4 +2,4 @@
 
 # Define variables for SysPiper deployment
 @{WORKING_DIR}=/home/syspiper
-@{CONFIG_FILE}=${WORKING_DIR}/config.json
+@{CONFIG_FILE}=@{WORKING_DIR}/config.json

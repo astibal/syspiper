@@ -3,6 +3,10 @@
 
 profile syspiper @{WORKING_DIR}/.venv/bin/gunicorn {
 
+  # Allow read working directory
+  @{WORKING_DIR}/ r,
+  @{WORKING_DIR}/** r,
+
   # Allow execution only of Gunicorn itself
   @{WORKING_DIR}/.venv/bin/gunicorn px,
 
@@ -24,8 +28,9 @@ profile syspiper @{WORKING_DIR}/.venv/bin/gunicorn {
   /etc/resolv.conf r,
   /etc/hosts r,
   /etc/nsswitch.conf r,
+  /etc/ld.so.cache r,
   /lib/** r,
-  /usr/lib/** r,
+  /usr/lib/** rm,
 
   # Allow random number generation
   /dev/urandom r,
@@ -36,7 +41,9 @@ profile syspiper @{WORKING_DIR}/.venv/bin/gunicorn {
 
   # Allow /tmp usage if needed
   /tmp/** rw,
+  @{WORKING_DIR}/tmp rw,
+  @{WORKING_DIR}/tmp/** rw,
 
-  # Deny everything else by default
-  deny /** w,
+  # Unlisted accesses are denied by default. An explicit deny /** w
+  # would also override the temporary-directory write permissions above.
 }
