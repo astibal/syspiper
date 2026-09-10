@@ -8,6 +8,9 @@ import argparse
 import psutil
 import ipaddress
 import posixpath
+import errno
+import socket
+import ssl
 from functools import wraps
 from fnmatch import fnmatchcase as glob_match
 from pathlib import Path
@@ -25,6 +28,38 @@ from typing import List
 class ProxyLoopDetected(HTTPException):
     code = 508
     description = "Proxy hop limit exceeded"
+
+
+def connection_error_detail(error):
+    """Describe nested transport failures without exposing URLs or credentials."""
+    pending = [error]
+    seen = set()
+    types = []
+    reasons = []
+    while pending and len(seen) < 20:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        name = type(current).__name__
+        if name not in types:
+            types.append(name)
+        if isinstance(current, socket.gaierror):
+            reason = f"DNS error {current.errno}"
+        elif isinstance(current, OSError) and not isinstance(current, ssl.SSLError) and current.errno in errno.errorcode:
+            reason = errno.errorcode[current.errno]
+        else:
+            reason = None
+        if reason and reason not in reasons:
+            reasons.append(reason)
+        nested = [current.__cause__, current.__context__, *current.args]
+        # Requests/urllib3 also wrap causes in these attributes.
+        nested.extend(getattr(current, attr, None) for attr in ("reason", "original_error", "_reason"))
+        pending.extend(item for item in nested if isinstance(item, BaseException))
+    detail = " -> ".join(types)
+    if reasons:
+        detail += " (" + ", ".join(reasons) + ")"
+    return detail
 
 
 def normalize_url(url):
@@ -167,6 +202,14 @@ class SysPiper:
 
         except HTTPException:
             raise
+        except requests.exceptions.HTTPError as error:
+            status = error.response.status_code if error.response is not None else "unknown"
+            self.logger.error("Proxy to node %s returned HTTP %s", node, status)
+            abort(502, description=f"Target node returned HTTP {status}")
+        except requests.exceptions.ConnectionError as error:
+            detail = connection_error_detail(error)
+            self.logger.error("Connection to node %s failed: %s", node, detail)
+            abort(502, description=f"Connection to target node failed: {detail}")
         except Exception as e:
             self.logger.error("Proxy to node %s failed (%s)", node, type(e).__name__)
             abort(502, description="Failed to fetch from target node")
@@ -413,6 +456,14 @@ class SysPiper:
 
             except HTTPException:
                 raise
+            except requests.exceptions.HTTPError as error:
+                status = error.response.status_code if error.response is not None else "unknown"
+                self.logger.error("Gateway to node %s, alias %s returned HTTP %s", node, alias, status)
+                abort(502, description=f"Target node returned HTTP {status}")
+            except requests.exceptions.ConnectionError as error:
+                detail = connection_error_detail(error)
+                self.logger.error("Connection to node %s, alias %s failed: %s", node, alias, detail)
+                abort(502, description=f"Connection to target node failed: {detail}")
             except Exception as e:
                 self.logger.error("Gateway error to node %s (%s)", node, type(e).__name__)
                 abort(502, description="Failed to fetch from target node")
