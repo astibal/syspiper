@@ -8,16 +8,38 @@ Group=syspiper
 Environment=IP_PORT=0.0.0.0:8181
 ExecStart=/bin/bash -c 'exec .venv/bin/gunicorn -w 4 -b ${IP_PORT} wsgi:app --access-logfile - --error-logfile -'
 
-# If VRF is needed - use override via `systemctl edit syspiper`
+# If VRF is needed, use an override via `systemctl edit syspiper`.
+# Verified example for VRF blue and 10.127.0.2:8181; adjust for the node.
+# Copy the [Service] block below into the override without the leading '# '.
+# The default empty CapabilityBoundingSet prevents `ip vrf exec` from working.
+# '!' starts the launcher as root while retaining the other service restrictions.
+# The listed capabilities allow VRF setup and the subsequent privilege drop.
+# setpriv switches to syspiper and clears capabilities before starting Gunicorn.
+#
 # [Service]
 # User=syspiper
+# Group=syspiper
+#
 # ExecStart=
-# ExecStart=/usr/sbin/ip vrf exec blue .venv/bin/gunicorn -w 4 -b ${IP_PORT} wsgi:app --access-logfile - --error-logfile -
+# ExecStart=!/usr/sbin/ip vrf exec blue /usr/bin/setpriv \
+#     --reuid=syspiper --regid=syspiper --init-groups \
+#     --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+#     /opt/syspiper/self/.venv/bin/gunicorn -w 4 -b 10.10.0.2:8181 \
+#     wsgi:app --access-logfile - --error-logfile -
+#
+# CapabilityBoundingSet=
+# CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_DAC_OVERRIDE CAP_SETUID CAP_SETGID CAP_SETPCAP
+# AmbientCapabilities=
+#
 # ProtectSystem=full
 # ReadWritePaths=/sys/fs/cgroup/system.slice/syspiper.service
 # ProtectControlGroups=no
 # Delegate=yes
 # RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
+#
+# Stop any manually started instance before starting the service on the same port.
+# After saving: systemctl daemon-reload && systemctl restart syspiper
+# Check startup: journalctl -u syspiper -n 30 --no-pager
 
 WorkingDirectory=/opt/syspiper/self
 Restart=always
@@ -45,7 +67,7 @@ RestrictAddressFamilies=AF_INET AF_INET6
 MemoryDenyWriteExecute=yes
 
 # No capabilities are needed for the default unprivileged port.
-# VRF deployments need an explicit, separately reviewed override.
+# For VRF, use the commented override above.
 CapabilityBoundingSet=
 AmbientCapabilities=
 
