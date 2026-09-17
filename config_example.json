@@ -1,12 +1,13 @@
 {
   "api_key": "secret123",
   "log_level": "INFO",
+  "upstream_deadline_seconds": 15,
   "allowed_ips": [
     "127.0.0.1",
     "::1"
   ],
   "allowed_nodes": {
-    "node8080": "http://127.0.0.1:8080",
+    "node8181": "http://127.0.0.1:8181",
     "sx1": "https://sx1u:55555"
   },
   "allowed_paths": {

@@ -12,11 +12,17 @@ from urllib.parse import urlsplit
 import requests
 from urllib3.exceptions import MaxRetryError, NameResolutionError, NewConnectionError, ProtocolError, ProxyError
 
-from app import SysPiper, connection_error_detail
+from upstream import fetch_result
+from app import SysPiper
+from upstream import connection_error_detail
 
 
 class AppTests(unittest.TestCase):
     def setUp(self):
+        # HTTP semantics are tested in-process; process cancellation has real-socket tests.
+        transport = patch("app.fetch_with_deadline", side_effect=lambda options, deadline: fetch_result(options))
+        transport.start()
+        self.addCleanup(transport.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.config_path = Path(self.temp.name) / "config.json"
@@ -47,7 +53,7 @@ class AppTests(unittest.TestCase):
         return response
 
     def test_every_proxy_endpoint_requires_key_and_allowed_ip(self):
-        with patch("app.requests.get") as get:
+        with patch("upstream.requests.get") as get:
             for path in ("/cpu/hop", "/ram/hop", "/disk/hop", "/net/hop", "/public_ip/hop"):
                 for headers, address in (({}, "127.0.0.1"), ({"X-API-Key": "wrong"}, "127.0.0.1"),
                                          (self.headers, "198.51.100.10")):
@@ -58,7 +64,7 @@ class AppTests(unittest.TestCase):
             get.assert_not_called()
 
     def test_local_remote_and_script_endpoints_require_auth(self):
-        with patch("app.requests.get") as get, patch("app.safe_exec") as execute:
+        with patch("upstream.requests.get") as get, patch("app.safe_exec") as execute:
             for path in ("/ram", "/remote/hop/status", "/status@hop", "/examples/date"):
                 with self.subTest(path=path):
                     self.assertEqual(self.client.get(path).status_code, 401)
@@ -101,7 +107,7 @@ class AppTests(unittest.TestCase):
 
     def test_proxy_strips_only_explicit_final_segment(self):
         app = self.make_app(allowed_nodes={"cpu": "http://hop.invalid/"})
-        with patch("app.requests.get", return_value=self.upstream()) as get:
+        with patch("upstream.requests.get", return_value=self.upstream()) as get:
             response = app.app.test_client().get("/cpu/cpu", headers=self.headers)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(get.call_args.args[0], "http://hop.invalid/cpu")
@@ -110,7 +116,7 @@ class AppTests(unittest.TestCase):
     def test_explicit_and_configured_hops_preserve_alias(self):
         app = self.make_app(allowed_nodes={"st": "http://hop.invalid"}, routes={"target": "st"})
         for path in ("/status@target/st", "/status@target"):
-            with self.subTest(path=path), patch("app.requests.get", return_value=self.upstream()) as get:
+            with self.subTest(path=path), patch("upstream.requests.get", return_value=self.upstream()) as get:
                 self.assertEqual(app.app.test_client().get(path, headers=self.headers).status_code, 200)
                 self.assertEqual(get.call_args.args[0], "http://hop.invalid/status@target")
 
@@ -129,7 +135,7 @@ class AppTests(unittest.TestCase):
             response = target.app.test_client().get(path, headers=kwargs["headers"])
             return self.upstream(response.json, response.status_code)
 
-        with patch("app.requests.get", side_effect=forward), patch("app.psutil.cpu_percent", return_value=12.5):
+        with patch("upstream.requests.get", side_effect=forward), patch("app.psutil.cpu_percent", return_value=12.5):
             for alias in ("sys_cpu", "sys_disk"):
                 with self.subTest(alias=alias):
                     response = gateway.app.test_client().get(f"/{alias}@hs1", headers=self.headers)
@@ -143,7 +149,7 @@ class AppTests(unittest.TestCase):
                 with self.subTest(status=status, path=path):
                     upstream = self.upstream({"secret": "upstream-secret"}, status)
                     upstream.url = "http://hop.invalid/url-secret"
-                    with patch("app.requests.get", return_value=upstream), self.assertLogs(self.app.logger) as logs:
+                    with patch("upstream.requests.get", return_value=upstream), self.assertLogs(self.app.logger) as logs:
                         response = self.client.get(path, headers=self.headers)
                     self.assertEqual(response.status_code, 502)
                     self.assertIn(f"HTTP {status}", response.json["description"])
@@ -167,7 +173,7 @@ class AppTests(unittest.TestCase):
             error = requests.ConnectionError(MaxRetryError(None, "/url-secret", reason))
             for path in ("/ram/hop", "/status@hop"):
                 with self.subTest(reason=expected, path=path):
-                    with patch("app.requests.get", side_effect=error), self.assertLogs(self.app.logger) as logs:
+                    with patch("upstream.requests.get", side_effect=error), self.assertLogs(self.app.logger) as logs:
                         response = self.client.get(path, headers=self.headers)
                     self.assertEqual(response.status_code, 502)
                     self.assertIn(expected, response.json["description"])
@@ -182,7 +188,7 @@ class AppTests(unittest.TestCase):
 
     def test_proxy_hops_are_validated_and_bounded(self):
         for hops, expected in (("-1", 400), ("bad", 400), ("9" * 100, 400), ("8", 508), ("99", 508)):
-            with self.subTest(hops=hops), patch("app.requests.get") as get:
+            with self.subTest(hops=hops), patch("upstream.requests.get") as get:
                 response = self.client.get("/ram/hop", headers={**self.headers, "X-SysPiper-Hops": hops})
                 self.assertEqual(response.status_code, expected)
                 self.assertEqual(response.json["code"], expected)
@@ -198,7 +204,7 @@ class AppTests(unittest.TestCase):
             downstream = app.app.test_client().get(urlsplit(url).path, headers=kwargs["headers"])
             return self.upstream(downstream.json, downstream.status_code)
 
-        with patch("app.requests.get", side_effect=forward):
+        with patch("upstream.requests.get", side_effect=forward):
             response = app.app.test_client().get("/status@target", headers=self.headers)
         self.assertEqual(response.status_code, 508)
         self.assertEqual(visited, [str(i) for i in range(1, app.MAX_PROXY_HOPS + 1)])
@@ -207,26 +213,31 @@ class AppTests(unittest.TestCase):
         app = self.make_app(allowed_nodes={"hop": "http://hop.invalid/base/"},
                             allowed_paths={"status": "/~~version~~/~~key~~/~~version~~"},
                             parts={"@version": {"hop": "v1"}, "@key": {"hop": "dummy"}})
-        with patch("app.requests.get", return_value=self.upstream()) as get:
+        with patch("upstream.requests.get", return_value=self.upstream()) as get:
             self.assertEqual(app.app.test_client().get("/status@hop", headers=self.headers).status_code, 200)
         self.assertEqual(get.call_args.args[0], "http://hop.invalid/base/v1/dummy/v1")
 
-    def test_missing_or_invalid_template_parts_fail_without_request(self):
+    def test_missing_or_invalid_template_parts_fail_at_startup(self):
         for path, parts in (("/~~missing~~", {}), ("/~~bad-name~~", {}),
                             ("/~~key~~", {"@key": {"hop": None}})):
-            with self.subTest(path=path, parts=parts):
-                app = self.make_app(allowed_paths={"status": path}, parts=parts)
-                with patch("app.requests.get") as get:
-                    response = app.app.test_client().get("/status@hop", headers=self.headers)
-                self.assertEqual(response.status_code, 502)
+            with self.subTest(path=path), patch("upstream.requests.get") as get:
+                with self.assertRaises(ValueError):
+                    self.make_app(allowed_paths={"status": path}, parts=parts)
                 get.assert_not_called()
+
+    def test_alias_missing_part_for_a_node_still_fails_without_request(self):
+        app = self.make_app(allowed_paths={"status": "/~~key~~"}, parts={"@key": {}})
+        with patch("upstream.requests.get") as get:
+            response = app.app.test_client().get("/status@hop", headers=self.headers)
+        self.assertEqual(response.status_code, 502)
+        get.assert_not_called()
 
     def test_template_secrets_not_logged_on_failure(self):
         app = self.make_app(allowed_paths={"status": "/~~key~~"}, parts={"@key": {"hop": "url-secret"}})
         for error in (requests.ConnectionError("http://hop.invalid/url-secret"),
                       requests.Timeout("http://hop.invalid/url-secret")):
             with self.subTest(error=type(error).__name__), self.assertLogs(app.logger, logging.DEBUG) as logs:
-                with patch("app.requests.get", side_effect=error):
+                with patch("upstream.requests.get", side_effect=error):
                     response = app.app.test_client().get("/status@hop", headers=self.headers)
             self.assertNotIn("url-secret", "\n".join(logs.output))
             self.assertNotIn("url-secret", response.get_data(as_text=True))
@@ -250,7 +261,7 @@ class AppTests(unittest.TestCase):
 
     def test_malformed_flat_routes_are_rejected(self):
         for path in ("/status@@hop", "/status@hop/", "/status@hop/a/b", "/status!@hop"):
-            with self.subTest(path=path), patch("app.requests.get") as get:
+            with self.subTest(path=path), patch("upstream.requests.get") as get:
                 self.assertEqual(self.client.get(path, headers=self.headers).status_code, 400)
                 get.assert_not_called()
 
@@ -264,7 +275,7 @@ class AppTests(unittest.TestCase):
         upstream = self.upstream()
         upstream._content = b"not json"
         for path in ("/ram/hop", "/status@hop"):
-            with self.subTest(path=path), patch("app.requests.get", return_value=upstream):
+            with self.subTest(path=path), patch("upstream.requests.get", return_value=upstream):
                 self.assertEqual(self.client.get(path, headers=self.headers).status_code, 502)
 
 

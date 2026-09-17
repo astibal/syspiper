@@ -9,7 +9,7 @@ Environment=IP_PORT=0.0.0.0:8181
 ExecStart=/bin/bash -c 'exec .venv/bin/gunicorn -w 4 -b ${IP_PORT} wsgi:app --access-logfile - --error-logfile -'
 
 # If VRF is needed, use an override via `systemctl edit syspiper`.
-# Verified example for VRF blue and 10.127.0.2:8181; adjust for the node.
+# Example for VRF blue and 10.10.0.2:8181; adjust for the node.
 # Copy the [Service] block below into the override without the leading '# '.
 # The default empty CapabilityBoundingSet prevents `ip vrf exec` from working.
 # '!' starts the launcher as root while retaining the other service restrictions.

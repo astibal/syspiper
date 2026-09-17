@@ -40,10 +40,10 @@ Then start the development server as your ordinary user:
 ```sh
 python app.py --config config.json
 # In another terminal, use the key you configured:
-curl -H 'X-API-Key: YOUR_API_KEY' http://127.0.0.1:8080/system
+curl -H 'X-API-Key: YOUR_API_KEY' http://127.0.0.1:8181/system
 ```
 
-`python app.py` binds to `0.0.0.0:8080`. For foreground Gunicorn on
+`python app.py` binds to `0.0.0.0:8181`. For foreground Gunicorn on
 `0.0.0.0:8181`, run `./run.here.sh` from the repository root. Use the
 [deployment guide](docs/deployment.md) for systemd installation and TLS guidance.
 
@@ -63,14 +63,18 @@ Run the regression suite as an unprivileged user from the repository root:
 .venv/bin/python -m pip check
 ```
 
-Tests cover authentication, routing, upstream HTTP limits, script execution and
-system/APT collectors. They mock upstream HTTP; some collector and script tests
-also exercise the local OS. They do not validate a deployed systemd, VRF or
+Tests cover startup validation, authentication, routing, upstream HTTP limits,
+script execution and system/APT collectors. HTTP semantics use mocks; deadline
+integration tests start a loopback HTTP server and real helper processes. Run
+the suite in an environment that permits local sockets. Collector and script
+tests also exercise the local OS. They do not validate a deployed systemd, VRF or
 AppArmor configuration.
 
 | File | Responsibility |
 | --- | --- |
-| `app.py` | Configuration, authentication, Flask routes and outbound HTTP |
+| `app.py` | Authentication, Flask routes and upstream orchestration |
+| `config_validation.py` | Startup configuration validation |
+| `upstream.py` | HTTP fetching and process-enforced total deadlines |
 | `system_stats.py` | Structured system snapshots and APT helper invocation |
 | `apt_stats.py` | Distribution-Python helper for local APT indexes |
 | `sexec.py` | Resource-limited execution of trusted scripts |

@@ -7,3 +7,7 @@
 /.idea/vcs.xml
 /.venv/
 /config.json
+
+# Python bytecode
+__pycache__/
+*.py[cod]

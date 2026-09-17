@@ -80,6 +80,18 @@ class SystemStatsTests(unittest.TestCase):
         self.assertEqual(result['boot']['data']['uptime_seconds'], 60)
         self.assertEqual(result['load']['data'], {'avg1': 1, 'avg5': 2, 'avg15': 3})
 
+    def test_cpu_times_are_cumulative_and_failure_is_partial(self):
+        Times = namedtuple('Times', 'user system idle')
+        with patch.object(psutil, 'cpu_times', return_value=Times(10.5, 2.5, 30)):
+            result = system_stats.system()
+        self.assertEqual(result['cpu_times'], {'status': 'ok', 'data': {
+            'user': 10.5, 'system': 2.5, 'idle': 30}})
+        with patch.object(psutil, 'cpu_times', side_effect=PermissionError):
+            result = system_stats.system()
+        self.assertEqual(result['cpu_times'], {'status': 'permission_denied', 'data': None})
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['identity']['status'], 'ok')
+
     def test_routes_auth_proxy_and_local_collection(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / 'config.json'

@@ -55,18 +55,19 @@ Errors use JSON when Accept is absent, empty, exactly `*/*`, or contains
 | 422 | Script failed, timed out, returned invalid data, or was run as root |
 | 500 | Unhandled local application error |
 | 502 | Upstream HTTP error, connection failure, invalid JSON, redirect, oversized body or failed substitution |
-| 504 | Direct alias or next-hop connection/read timeout |
+| 504 | Direct alias or next-hop connection/read timeout, or the total upstream deadline on any outbound path |
 | 508 | Next-hop forwarding limit reached |
 
 An upstream error status is normally mapped to 502, not transparently relayed.
-Next-hop forwarding preserves 508. `/public_ip` maps transport timeouts to 502.
+Next-hop forwarding preserves 508. `/public_ip` maps connection/read timeouts to
+502, but the new total elapsed-time deadline returns 504.
 Snapshot section failures normally still return HTTP 200 with `status: "partial"`;
 clients must inspect both HTTP and body status.
 
 ## Extended system snapshots
 
 The following authenticated GET endpoints also support `/<node>` proxying,
-for example `/interfaces/node8080`. Existing endpoints retain their response formats.
+for example `/interfaces/node8181`. Existing endpoints retain their response formats.
 
 | Endpoint | Sections | Contents |
 | --- | --- | --- |
@@ -194,8 +195,24 @@ An oversized declared Content-Length is rejected before body collection; missing
 or invalid lengths do not bypass the streaming limit. Responses are closed on
 success and failure. This is a response limit, not a process-memory limit.
 
-Connection/read timeouts are 5 seconds for next-hop and public-IP requests,
-and 3 seconds for direct aliases. They are not whole-download deadlines.
-A slowly arriving body can occupy a worker for longer. The APT helper has a
-separate 10-second deadline, so a valid slow `/apt` collection can outlast the
-5-second next-hop read timeout.
+Connection/read timeouts remain 5 seconds for next-hop and public-IP requests,
+and 3 seconds for direct aliases. These detect connection/read stalls and remain
+independent of the total budget. The APT helper retains its separate 10-second
+deadline, so a valid slow `/apt` collection can outlast the 5-second next-hop read
+timeout; this behavior is intentional.
+
+`upstream_deadline_seconds` adds a total elapsed-time budget (default 15 seconds)
+for each outbound operation. It covers helper startup, DNS, connection/TLS,
+response headers, body transfer and child-side JSON parsing. A separate helper
+process performs the fetch; the parent kills and reaps it on expiry, closing its
+sockets even if headers or the body keep arriving a byte at a time. This works
+with both synchronous and threaded WSGI workers. Expiry returns HTTP 504 on all
+three outbound paths. Normal process scheduling and cleanup add some overhead;
+this is not a real-time scheduling guarantee.
+
+The helper adds one short-lived Python process per outbound request, using the
+same virtualenv and service identity. URL credentials and configured headers
+are passed over stdin, not in command-line arguments. There is no new Python
+dependency. The 1 MiB upstream body bound remains; the internal JSON result
+representation can be larger due to escaping. Each hop has its own budget,
+not one shared budget for the entire proxy chain.

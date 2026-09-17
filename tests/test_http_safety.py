@@ -10,6 +10,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.response import HTTPResponse
 
+from upstream import fetch_result
 from app import SysPiper
 
 
@@ -51,6 +52,10 @@ class HttpSafetyTests(unittest.TestCase):
     paths = ("/ram/hop", "/status@hop", "/public_ip")
 
     def setUp(self):
+        # HTTP semantics are tested in-process; process cancellation has real-socket tests.
+        transport = patch("app.fetch_with_deadline", side_effect=lambda options, deadline: fetch_result(options))
+        transport.start()
+        self.addCleanup(transport.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         config_path = Path(self.temp.name) / "config.json"
@@ -68,9 +73,17 @@ class HttpSafetyTests(unittest.TestCase):
         with requests.Session() as session:
             session.trust_env = False
             session.mount("https://", adapter)
-            with patch("app.requests.get", side_effect=session.get):
+            with patch("upstream.requests.get", side_effect=session.get):
                 return self.service.app.test_client().get(
                     path, headers={"X-API-Key": "incoming-test-key"})
+
+    def test_endpoint_read_timeouts_remain_distinct(self):
+        for path, timeout in (("/ram/hop", 5), ("/status@hop", 3), ("/public_ip", 5)):
+            with self.subTest(path=path):
+                adapter = FixtureAdapter(TrackedBody(b'{}'))
+                with patch.object(adapter, 'send', wraps=adapter.send) as send:
+                    self.assertEqual(self.fetch(path, adapter).status_code, 200)
+                self.assertEqual(send.call_args.kwargs['timeout'], timeout)
 
     def test_redirects_are_rejected_before_body_read_or_credentials_forwarding(self):
         for status in (300, 301, 302, 303, 304, 307, 308):

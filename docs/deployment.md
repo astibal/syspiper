@@ -86,7 +86,8 @@ namespaces and mount restrictions, which can differ from an interactive shell.
 
 The default workers are synchronous. CPU samples block for one second, scripts
 for up to five seconds, and the APT helper for up to ten seconds. Slow upstreams
-or filesystem mounts can also occupy workers. There is no application-level
+or filesystem mounts can also occupy workers. Outbound HTTP operations have an
+additional total budget of 15 seconds by default (`upstream_deadline_seconds`). There is no application-level
 rate limit or collection cache. Size worker capacity for the polling workload.
 
 Scripts retain filesystem/network access under the service identity. Their
@@ -103,9 +104,10 @@ for normal deployment. Test it on the intended host and check journal output.
 
 The [AppArmor profile](../apparmor.d/syspiper) is experimental and is not enabled
 by the installation above. Its [tunables](../apparmor.d/tunables/syspiper) default
-to `/home/syspiper`, unlike the systemd installation path. Align them before
-loading the profile. It has not been validated here against live Gunicorn,
-script subprocesses, netlink collection or the distribution-Python APT helper.
+to `/opt/syspiper/self`, matching the systemd unit. Adjust them for a custom
+installation before loading the profile. It has not been validated here against live Gunicorn,
+script subprocesses, the new HTTP helper, netlink collection or the
+distribution-Python APT helper.
 Profile parsing alone does not establish that those operations work.
 
 ## Upgrades
@@ -127,10 +129,19 @@ project's bounded decompression design; do not silently reuse an older environme
 Run the regression suite in an unprivileged development/test checkout before
 upgrading production. Refresh the virtualenv if its underlying Python changed.
 
-On older installations, migrate `myip.url` to `myip_url`. The new example enables
+On older installations, migrate `myip.url` to `myip_url`; unknown keys now stop
+startup. Correct invalid node references, URL/header types and absolute alias
+URLs before restarting. Duplicate JSON keys are rejected as well. The development
+server now defaults to 8181, matching Gunicorn; update clients previously using
+8080. The sample next-hop name is now `node8181` (existing custom node names
+remain valid). The new example enables
 TLS verification and restricts access to loopback; existing `config.json` files
 are not changed automatically. Upgrade every node in a proxy chain to preserve
 hop limits end to end.
+
+If increasing the total upstream budget, also review Gunicorn and reverse-proxy
+timeouts: an outer server may terminate the request earlier. Keep distinct
+connection/read and collector timeouts suited to their respective operations.
 
 ## Troubleshooting
 

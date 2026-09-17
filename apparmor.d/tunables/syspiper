@@ -1,5 +1,5 @@
 # /etc/apparmor.d/tunables/syspiper
 
 # Define variables for SysPiper deployment
-@{WORKING_DIR}=/home/syspiper
+@{WORKING_DIR}=/opt/syspiper/self
 @{CONFIG_FILE}=@{WORKING_DIR}/config.json
