@@ -1,29 +1,10 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (c) 2025-2026 Ales Stibal
+
 import re
 import unicodedata
 
-"""
-This file is taken out from my other proprietary repository and is re-licensed explicitly for
-use in this project, under original license:
 
-All rights reserved.
-
-This software is proprietary. It is not licensed for public use, distribution, or modification.
-
-You may not:
-- use the code for commercial or non-commercial purposes,
-- host, run or deploy it in any environment,
-- modify, repackage, or redistribute it,
-- or integrate it into other projects,
-
-without the explicit, written permission of the author.
-
-Source code may be made available for review or evaluation on request, but such availability does not constitute permission to use.
-
-Unauthorized use will be considered a violation of intellectual property rights.
-
-© 2025 Ales Stibal, astib@nobs.watch
-
-"""
 
 class FilterSetup:
     BRUTAL_ALLOWED_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_@."

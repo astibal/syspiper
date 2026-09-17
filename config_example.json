@@ -1,8 +1,10 @@
 {
   "api_key": "secret123",
-  "log_level": "DEBUG",
-  "myip.url": "https://myip.dk",
-  "allowed_ips": ["0.0.0.0/0"],
+  "log_level": "INFO",
+  "allowed_ips": [
+    "127.0.0.1",
+    "::1"
+  ],
   "allowed_nodes": {
     "node8080": "http://127.0.0.1:8080",
     "sx1": "https://sx1u:55555"
@@ -20,9 +22,15 @@
     }
   },
   "headers": {
-    "sx1": [ [ "X-Api-Key", "verysecret"] ]
+    "sx1": [
+      [
+        "X-Api-Key",
+        "verysecret"
+      ]
+    ]
   },
-  "tls_verify":{
-    "sx1": false
-  }
+  "tls_verify": {
+    "sx1": true
+  },
+  "myip_url": "https://myip.dk"
 }
