@@ -71,6 +71,7 @@ def system():
     return snapshot(
         identity=read_value(identity), distro=read_value(distribution), boot=read_value(boot),
         cpu=read_value(lambda: {"logical": psutil.cpu_count(), "physical": psutil.cpu_count(logical=False)}),
+        cpu_times=read_value(lambda: psutil.cpu_times()._asdict()),
         load=read_value(lambda: dict(zip(("avg1", "avg5", "avg15"), os.getloadavg()))),
     )
 
