@@ -16,6 +16,7 @@ from fnmatch import fnmatchcase as glob_match
 from pathlib import Path
 from hmac import compare_digest
 from sexec import safe_exec
+import system_stats
 
 from urllib.parse import urlparse, urljoin, urlunparse
 from flask import Flask, request, jsonify, abort, make_response
@@ -378,6 +379,18 @@ class SysPiper:
 
     def setup_routes(self):
         """Define all API routes."""
+
+        for name in ("interfaces", "system", "filesystems", "pressure", "apt"):
+            collector = getattr(system_stats, name)
+
+            def collect(node=None, collector=collector):
+                return collector()
+
+            view = self.proxyable(collect)
+            self.app.add_url_rule(f"/{name}", endpoint=name, view_func=view,
+                                  defaults={"node": None}, methods=["GET"])
+            self.app.add_url_rule(f"/{name}/<node>", endpoint=name, view_func=view,
+                                  methods=["GET"])
 
         @self.app.route("/public_ip", defaults={"node": None}, methods=["GET"])
         @self.app.route("/public_ip/<node>", methods=["GET"])

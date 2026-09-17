@@ -61,7 +61,8 @@ ProtectControlGroups=yes
 
 # Process sandboxing
 NoNewPrivileges=yes
-RestrictAddressFamilies=AF_INET AF_INET6
+# psutil interface enumeration uses netlink; no capabilities are granted.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
 
 # Memory protection
 MemoryDenyWriteExecute=yes

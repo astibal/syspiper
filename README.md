@@ -223,3 +223,117 @@ python -m unittest discover -s tests -v
 ```
 
 Tests use temporary configurations and scripts, with HTTP upstreams mocked.
+
+## Extended system snapshots
+
+The following authenticated GET endpoints also support `/<node>` proxying,
+for example `/interfaces/node8080`. Existing endpoints retain their response formats.
+
+| Endpoint | Sections | Contents |
+| --- | --- | --- |
+| `/interfaces` | `addresses`, `links`, `counters` | Maps keyed by interface name: IPv4/IPv6/MAC addresses, netmasks, link state, MTU, speed in Mbps, duplex, flags, byte/packet/error/drop counters |
+| `/system` | `identity`, `boot`, `cpu`, `load` | Hostname, OS, kernel, architecture, boot time, uptime in seconds, logical/physical CPU counts, 1/5/15-minute load averages |
+| `/filesystems` | `filesystems` | List of mounted filesystems reported by `psutil.disk_partitions(all=False)` (pseudo filesystems filtered), device, mountpoint, type, options, byte usage and inode usage |
+| `/pressure` | `cpu`, `memory`, `io` | Linux PSI from `/proc/pressure`, with `some`/`full` where provided, percentage averages over 10/60/300 seconds and cumulative `total_us` |
+
+Every response includes `sampled_at` (Unix time in seconds, recorded at the end
+of collection) and `status` (`ok` or `partial`). Each section has `status` and
+`data`. Failed sections return `data: null` and `unsupported`,
+`permission_denied`, or `unavailable`. Filesystem entries contain separate
+`usage` and `inodes` sections; individual mount failures do not discard other mounts.
+Unknown link speed/duplex and unavailable CPU counts are null. Filesystems
+reporting zero total inodes expose inode statistics as unsupported.
+
+Example shape for an interface counter section:
+
+```json
+{
+  "status": "ok",
+  "data": {
+    "eth0": {
+      "bytes_sent": 1024, "bytes_recv": 2048,
+      "packets_sent": 10, "packets_recv": 20,
+      "errin": 0, "errout": 0, "dropin": 0, "dropout": 0
+    }
+  }
+}
+```
+
+Network counters are raw cumulative kernel values, without process-local wrap
+correction. Calculate rates from successive samples (`delta bytes / delta time`);
+discard intervals across reboots, interface recreation or counter decreases.
+The collectors do not sleep or maintain a background sampler. Sections are read
+sequentially, so a snapshot is not atomic. Filesystem queries can be delayed by
+unresponsive mounts. Statistics reflect the service's visible namespaces and
+filesystem sandbox, which may differ from an interactive host session.
+
+PSI requires kernel support and readable `/proc/pressure` files. System-wide CPU
+`full` is undefined by Linux and may be reported as zero; do not interpret it as
+an independent health signal. Missing PSI is reported without failing the request.
+
+The supplied systemd unit allows `AF_NETLINK` for interface enumeration while
+retaining an empty capability set. When upgrading an installed unit, reload
+systemd and restart the service to apply this change. A stricter external
+sandbox may still return `permission_denied` for interface addresses/link data.
+
+## Debian / Ubuntu APT updates
+
+`/system` now includes a `distro` section read from `os-release`, with `id`,
+`id_like`, `name`, `pretty_name`, `version_id` and `version_codename`.
+
+`GET /apt` (or `/apt/<node>`) returns `distro` and `updates` sections using the
+same snapshot envelope and authentication as other system endpoints. For example:
+
+```json
+{
+  "status": "ok",
+  "sampled_at": 1789632000,
+  "distro": {"status": "ok", "data": {"id": "ubuntu", "version_id": "24.04"}},
+  "updates": {
+    "status": "ok",
+    "data": {
+      "total": 12,
+      "security": 5,
+      "held": 2,
+      "security_held": 1,
+      "indexes": {
+        "oldest_mtime": 1789500000,
+        "newest_mtime": 1789630000,
+        "oldest_age_seconds": 132000
+      }
+    }
+  }
+}
+```
+
+Install the optional OS dependency with `sudo apt install python3-apt`.
+The collector invokes `/usr/bin/python3 -I` with a fixed local helper and a
+10-second timeout, so native APT bindings need not be installed in the app's
+virtualenv. It opens an in-memory APT cache and never updates indexes, installs
+packages, acquires an installation lock or requests root access. Index refreshes
+remain the responsibility of your existing APT timers/administration.
+
+Counts represent installed binary packages (architectures counted separately)
+whose APT policy candidate is newer than the installed version. Held packages
+are included in `total` and `security`; `held` and `security_held` are subsets.
+This is not an upgrade transaction simulation: dependency resolution, phasing
+and holds can affect what an actual upgrade installs.
+
+Security classification recognizes trusted Debian security origins (including
+legacy `/updates` suites), Ubuntu `-security`, and Ubuntu ESM Infra/Apps security
+pockets. It checks available versions newer than installed and no newer than the
+candidate, so an ordinary update superseding a pending security fix still counts
+once as security. Packages pinned at their installed version are excluded.
+
+These are **available package updates, not a CVE count or a vulnerability audit**.
+Counts only cover locally indexed, enabled sources; disabled/unavailable ESM,
+missing security sources and fixes no longer represented in security indexes
+cannot be inferred. A zero security count does not prove the host is patched.
+
+Index timestamps are package-index file mtimes, **not the time of the last
+successful `apt update`**; APT can preserve repository timestamps and unchanged
+indexes can legitimately be old. The oldest/newest timestamps provide context,
+not a definitive freshness verdict. Missing indexes, missing python3-apt,
+permission failures and timeouts return null data with an explicit status/reason
+rather than a misleading zero count. No package names or repository credentials
+are returned.
