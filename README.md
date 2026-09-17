@@ -77,6 +77,26 @@ ensure it can read the application, virtualenv, scripts and configuration.
 Privileged VRF setups need an explicit override; the default unit listens on
 the unprivileged port 8181.
 
+## Upstream HTTP safety
+
+All outbound HTTP reads (next-hop proxies, configured aliases and `/public_ip`)
+reject HTTP 3xx responses with HTTP 502. Redirects are never followed, including
+same-host redirects: configure the final URL directly. This prevents API keys
+and other configured headers from being forwarded to a redirect destination.
+The redirect body is rejected before Requests can read it internally.
+
+Response bodies are streamed in 64 KiB chunks and limited to **1 MiB after
+decompression**, before JSON parsing. Oversized Content-Length values are rejected
+before reading; missing or invalid Content-Length does not bypass the byte limit.
+Oversized responses return HTTP 502, and connections are closed on success and
+failure. The limit is `SysPiper.MAX_UPSTREAM_BYTES` in `app.py`.
+
+Update dependencies when deploying this change: `python -m pip install -r requirements.txt`.
+The minimum `urllib3>=2.7.0` includes fixes for bounded streaming decompression
+([upstream advisory](https://github.com/urllib3/urllib3/security/advisories/GHSA-mf9v-mfxr-j63j)).
+The existing Requests timeouts remain connection/read timeouts, not a strict
+deadline for the entire download. The byte limit is not a total process RAM limit.
+
 ## Scripts
 
 Only install scripts you trust. The runner limits resource use, but scripts

@@ -90,6 +90,7 @@ class SysPiper:
     """Main application class for SysPiper."""
 
     MAX_PROXY_HOPS = 8
+    MAX_UPSTREAM_BYTES = 1 << 20
 
     def __init__(self, config_path):
         """Initialize the app with configuration."""
@@ -167,6 +168,42 @@ class SysPiper:
         if not compare_digest(api_key.encode("utf-8"), self.api_key.encode("utf-8")):
             abort(401, description="Unauthorized")
 
+    def _fetch_upstream(self, url, *, headers, timeout, verify=True,
+                        expect_json=True, propagate_loop=False):
+        """Fetch one configured URL, with no redirects and a bounded body."""
+        def reject_redirect(response, *args, **kwargs):
+            if 300 <= response.status_code < 400:
+                # Requests may consume a redirect body to prepare Response.next
+                # even with allow_redirects=False. Reject it before that happens.
+                response.close()
+                abort(502, description="Upstream redirects are not allowed")
+
+        with requests.get(url, headers=headers, timeout=timeout, verify=verify,
+                          allow_redirects=False, stream=True,
+                          hooks={"response": reject_redirect}) as response:
+            if propagate_loop and response.status_code == 508:
+                raise ProxyLoopDetected()
+            response.raise_for_status()
+            try:
+                content_length = int(response.headers.get("Content-Length", ""))
+            except ValueError:
+                content_length = None
+            if content_length is not None and content_length > self.MAX_UPSTREAM_BYTES:
+                abort(502, description="Upstream response exceeds 1 MiB limit")
+
+            body = bytearray()
+            # iter_content decodes gzip/deflate, so the limit also covers the
+            # expanded body and responses without a trustworthy Content-Length.
+            for chunk in response.iter_content(chunk_size=64 << 10):
+                if len(body) + len(chunk) > self.MAX_UPSTREAM_BYTES:
+                    abort(502, description="Upstream response exceeds 1 MiB limit")
+                body.extend(chunk)
+
+            if expect_json:
+                value = body.decode(response.encoding, errors="replace") if response.encoding else body
+                return json.loads(value)
+            return body.decode(response.encoding or "utf-8", errors="replace")
+
     def proxy_it(self, node, endpoint=None):
         """Proxy the request to the remote node."""
         target_url = self.allowed_nodes.get(node)
@@ -186,11 +223,8 @@ class SysPiper:
 
         try:
             self.logger.debug("Proxying to node %s", node)
-            proxy_response = requests.get(full_url, headers=headers, timeout=5)
-            if proxy_response.status_code == 508:
-                raise ProxyLoopDetected()
-            proxy_response.raise_for_status()
-            return jsonify(proxy_response.json())
+            return jsonify(self._fetch_upstream(full_url, headers=headers, timeout=5,
+                                                propagate_loop=True))
 
         except requests.exceptions.Timeout:
             self.logger.error("Timeout proxying to node %s", node)
@@ -352,16 +386,19 @@ class SysPiper:
             """Fetch public IP by requesting an external service."""
             try:
                 headers = {"User-Agent": "curl/8.5.0", "Accept": "*/*"}
-                response = requests.get(self.myip_url, timeout=5, headers=headers)
+                ip_text = self._fetch_upstream(self.myip_url, timeout=5, headers=headers,
+                                               expect_json=False)
 
+            except HTTPException:
+                raise
             except Exception as e:
-                self.logger.error(f"Failed to fetch IP: {e}")
-                abort(502, description=f"Failed to reach external service: {str(e)}")
+                self.logger.error("Failed to fetch IP (%s)", type(e).__name__)
+                abort(502, description="Failed to reach external service")
 
-            self.logger.info(f"Fetched IP service response, length={len(response.text)}")
+            self.logger.info("Fetched IP service response, length=%s", len(ip_text))
             return jsonify({
                 "status": "ok",
-                "ip": response.text
+                "ip": ip_text
             })
 
         # CPU
@@ -442,9 +479,8 @@ class SysPiper:
                 self.logger.debug("Proxying remote request to node %s, alias %s", node, alias)
 
                 verify = self.tls_verify.get(node, True)
-                proxy_response = requests.get(full_url, headers=self.get_node_headers(node), timeout=3, verify=verify)
-                proxy_response.raise_for_status()
-                return jsonify(proxy_response.json())
+                return jsonify(self._fetch_upstream(full_url, headers=self.get_node_headers(node),
+                                                    timeout=3, verify=verify))
 
             except requests.exceptions.Timeout:
                 self.logger.error("Gateway timeout to node %s", node)

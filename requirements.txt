@@ -1,4 +1,6 @@
 flask
 requests
+# Bounded decompression is required by the upstream response size limit.
+urllib3>=2.7.0
 psutil
 gunicorn
